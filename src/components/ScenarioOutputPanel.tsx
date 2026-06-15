@@ -1,5 +1,6 @@
-import type { RefObject } from "react";
-import { ClipboardCopy } from "lucide-react";
+import type { ReactNode, RefObject } from "react";
+import { Check, ClipboardCopy } from "lucide-react";
+import { shouldRenderScenarioReport } from "../domain/reportDelivery";
 import type { MetricDimension, MetricSummary, ScenarioOutput } from "../domain/types";
 
 type ScenarioOutputPanelProps = {
@@ -7,9 +8,18 @@ type ScenarioOutputPanelProps = {
   executiveOutput: ScenarioOutput;
   metrics: MetricSummary;
   output: ScenarioOutput;
+  showScenarioOutput: boolean;
+  scenarioControl?: ReactNode;
 };
 
-export function ScenarioOutputPanel({ sectionRef, executiveOutput, metrics, output }: ScenarioOutputPanelProps) {
+export function ScenarioOutputPanel({
+  sectionRef,
+  executiveOutput,
+  metrics,
+  output,
+  showScenarioOutput,
+  scenarioControl,
+}: ScenarioOutputPanelProps) {
   async function copyOutput(text: string) {
     await navigator.clipboard?.writeText(text);
   }
@@ -22,7 +32,6 @@ export function ScenarioOutputPanel({ sectionRef, executiveOutput, metrics, outp
       <div className="column-header">
         <p className="eyebrow">可交付内容</p>
         <h2>总报告看判断，专项清单看执行</h2>
-        <p className="column-subtitle">总报告用于复盘会说明优先级；专项清单用于发给区域或服务中心逐项跟进。</p>
       </div>
       <div className="delivery-metric-strip" aria-label="报告关键指标">
         {deliveryMetrics.map((metric) => (
@@ -70,13 +79,21 @@ export function ScenarioOutputPanel({ sectionRef, executiveOutput, metrics, outp
         </div>
       </section>
       <ReportBlock output={executiveOutput} onCopy={copyOutput} primary />
-      <ReportBlock output={output} onCopy={copyOutput} />
+      {scenarioControl}
+      {shouldRenderScenarioReport(showScenarioOutput) ? (
+        <ReportBlock output={output} onCopy={copyOutput} />
+      ) : (
+        <section className="scenario-report-placeholder">
+          <strong>分报告暂未生成</strong>
+          <span>请在下方“专项交付”中选择服务问题闭环、满意度归因、区域/城市下钻、活动体验复盘或口碑素材与风险，系统会在总报告之后生成对应分报告。</span>
+        </section>
+      )}
     </aside>
   );
 }
 
 function pickDeliveryMetrics(metrics: MetricSummary): MetricDimension[] {
-  const labels = ["反馈量", "平均服务评分", "净推荐值（NPS）", "低分反馈", "待跟进"];
+  const labels = ["反馈量", "平均服务评分", "净推荐值", "低分反馈", "待跟进"];
   const byLabel = new Map(metrics.metricDimensions.map((metric) => [metric.label, metric]));
   return labels.map((label) => byLabel.get(label)).filter((metric): metric is MetricDimension => Boolean(metric));
 }
@@ -96,7 +113,7 @@ function buildDataReviewGroups(metrics: MetricSummary) {
     {
       title: "体验结果",
       description: "判断本期体验整体表现。",
-      items: [formatMetric("平均服务评分"), formatMetric("净推荐值（NPS）"), formatMetric("满意率")],
+      items: [formatMetric("平均服务评分"), formatMetric("净推荐值"), formatMetric("满意率")],
     },
     {
       title: "问题风险",
@@ -128,6 +145,7 @@ function ReportBlock({
   return (
     <section className={primary ? "report-block primary-report" : "report-block"}>
       <div className={primary ? "output-kind-badge executive" : "output-kind-badge task"}>
+        {primary ? <Check size={14} /> : <ClipboardCopy size={14} />}
         {primary ? "总报告：管理层复盘摘要" : output.outputKind === "closure-list" ? "专项清单：服务运营待办" : "专项报告：场景下钻材料"}
       </div>
       <h3>{output.title}</h3>
@@ -168,7 +186,7 @@ function ReportBlock({
           </article>
         ))}
       </div>
-      <button className="copy-button" onClick={() => onCopy(output.copyableText)}>
+      <button className="copy-button button-primary" onClick={() => onCopy(output.copyableText)} type="button">
         <ClipboardCopy size={18} />
         复制{primary ? "总报告" : "分报告"}
       </button>

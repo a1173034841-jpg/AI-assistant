@@ -85,4 +85,30 @@ describe("import validation", () => {
     expect(summary.items.find((item) => item.id === "metric-coverage")?.status).toBe("fail");
     expect(summary.items.find((item) => item.id === "privacy-check")?.status).toBe("fail");
   });
+
+  it("accepts multiple business projects in the imported data pool", () => {
+    const summary = buildImportValidationSummary([
+      validExport,
+      {
+        ...validExport,
+        exportId: "export-2",
+        projectName: "B 项目：服务中心月中回访",
+        sourceName: "月中回访问卷",
+        records: [
+          {
+            ...validExport.records[0],
+            id: "fb-3",
+            submittedAt: "2026-05-12T10:00:00+08:00",
+          },
+        ],
+      },
+    ]);
+
+    const projectItem = summary.items.find((item) => item.id === "project-consistency");
+
+    expect(projectItem?.label).toBe("业务项目识别");
+    expect(projectItem?.status).toBe("pass");
+    expect(projectItem?.metric).toBe("2 个项目");
+    expect(summary.stats.sourceCount).toBe(2);
+  });
 });

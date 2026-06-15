@@ -4,9 +4,10 @@ export type SurveyPlatform =
   | "金数据"
   | "App内问卷"
   | "短信链接"
-  | "企微链接";
+  | "企微链接"
+  | "其他来源";
 
-export type Region = "华南" | "华东" | "华北" | "西南";
+export type Region = "华南" | "华东" | "华北" | "西南" | "华中" | "西北" | "东北";
 
 export type ServiceScenario =
   | "到店服务"
@@ -27,14 +28,6 @@ export type ServiceStage =
 export type Sentiment = "正向" | "中性" | "负向";
 export type Severity = "低" | "中" | "高";
 export type ConsentState = "未询问" | "已授权联系" | "拒绝联系";
-
-export type SurveyTemplateField = {
-  id: string;
-  label: string;
-  type: "rating" | "nps" | "singleSelect" | "text" | "contact" | "consent";
-  required: boolean;
-  helperText?: string;
-};
 
 export type OptionalContactInfo = {
   name?: string;
@@ -70,6 +63,8 @@ export type ThirdPartySurveyExport = {
 export type NormalizedFeedback = FeedbackImportRecord & {
   sourceLabel: string;
   displayLocation: string;
+  projectName: string;
+  projectType: string;
 };
 
 export type WorkbenchScenario =
@@ -107,6 +102,25 @@ export type MetricGroup = {
   title: string;
   description: string;
   metrics: MetricDimension[];
+};
+
+export type ProjectSelection =
+  | {
+      mode: "all";
+    }
+  | {
+      mode: "selected";
+      projectNames: string[];
+    }
+  | {
+      mode: "byType";
+      projectTypes: string[];
+    };
+
+export type ProjectOption = {
+  projectName: string;
+  projectType: string;
+  totalFeedback: number;
 };
 
 export type FocusRegionInsight = {
@@ -148,6 +162,16 @@ export type ScenarioOutput = {
     evidenceQuotes: EvidenceQuote[];
   }>;
   copyableText: string;
+};
+
+export type AutoRecapModule = {
+  id: string;
+  title: string;
+  question: string;
+  summary: string;
+  dataPoints: string[];
+  evidenceQuotes: EvidenceQuote[];
+  nextAction?: string;
 };
 
 export type MetricSummary = {

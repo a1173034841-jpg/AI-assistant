@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAutoRecapModules,
   buildFindingsForScenario,
   buildFocusRegionInsights,
   buildMetricSummary,
+  buildProjectOptionsForTimeRange,
   buildRegionTree,
   filterRecordsByDate,
   filterRecordsByGeoSelection,
+  filterRecordsByProjectSelection,
+  getTimeGrainDateRange,
 } from "./analysisRules";
 import { mapSurveyExportToFeedback } from "./importMapper";
+import { buildImportValidationSummary } from "./importValidation";
 import { createScenarioOutput } from "./outputTemplates";
 import type { ThirdPartySurveyExport } from "./types";
 
@@ -116,6 +121,45 @@ describe("after-sales text workbench domain flow", () => {
     expect(centerRecords[0].id).toBe("fb-1");
   });
 
+  it("normalizes reversed date ranges before filtering", () => {
+    const secondExport: ThirdPartySurveyExport = {
+      ...exportFixture,
+      exportId: "export-2",
+      sourceName: "端午售后服务专项",
+      projectName: "B 项目：端午售后服务专项",
+      periodStart: "2026-05-27",
+      periodEnd: "2026-06-02",
+      records: [
+        {
+          ...exportFixture.records[0],
+          id: "fb-3",
+          submittedAt: "2026-05-28T10:00:00+08:00",
+        },
+      ],
+    };
+    const records = [exportFixture, secondExport].flatMap((source) => mapSurveyExportToFeedback(source));
+
+    expect(filterRecordsByDate(records, "2026-05-28", "2026-05-26")).toHaveLength(3);
+  });
+
+  it("builds trailing date ranges for time grain presets", () => {
+    const fullRange = { startDate: "2026-01-01", endDate: "2026-06-30" };
+
+    expect(getTimeGrainDateRange(fullRange, "day")).toEqual({
+      startDate: "2026-06-30",
+      endDate: "2026-06-30",
+    });
+    expect(getTimeGrainDateRange(fullRange, "week")).toEqual({
+      startDate: "2026-06-24",
+      endDate: "2026-06-30",
+    });
+    expect(getTimeGrainDateRange(fullRange, "month")).toEqual({
+      startDate: "2026-06-01",
+      endDate: "2026-06-30",
+    });
+    expect(getTimeGrainDateRange(fullRange, "custom")).toEqual(fullRange);
+  });
+
   it("summarizes service metrics beyond NPS for decision making", () => {
     const records = mapSurveyExportToFeedback(exportFixture);
     const summary = buildMetricSummary(records);
@@ -155,12 +199,89 @@ describe("after-sales text workbench domain flow", () => {
     });
 
     const summary = buildMetricSummary(records);
-    const npsMetric = summary.metricDimensions.find((metric) => metric.label === "净推荐值（NPS）");
+    const npsMetric = summary.metricDimensions.find((metric) => metric.label === "净推荐值");
 
     expect(summary.netPromoterScore).toBe(100);
     expect(summary.npsRespondentCount).toBe(1);
     expect(npsMetric?.value).toBe("100");
     expect(npsMetric?.helper).toContain("范围为 -100 到 100");
+  });
+
+  it("keeps net promoter value naming separate from per-record recommendation score", () => {
+    const records = mapSurveyExportToFeedback(exportFixture);
+    const summary = buildMetricSummary(records);
+    const npsMetric = summary.metricDimensions.find((metric) => metric.label === "净推荐值");
+    const recommendationScoreMetric = summary.metricDimensions.find((metric) => metric.label.includes("推荐意愿评分"));
+
+    expect(npsMetric?.helper).toContain("净推荐值");
+    expect(npsMetric?.helper).toContain("推荐者占比");
+    expect(npsMetric?.helper).toContain("推荐意愿评分 0-10 分");
+    expect(recommendationScoreMetric).toBeUndefined();
+  });
+
+  it("preserves project metadata on normalized records and filters projects inside a time range", () => {
+    const secondExport: ThirdPartySurveyExport = {
+      ...exportFixture,
+      exportId: "export-2",
+      sourceName: "端午售后服务专项",
+      projectName: "B 项目：端午售后服务专项",
+      periodStart: "2026-05-27",
+      periodEnd: "2026-06-02",
+      records: [
+        {
+          ...exportFixture.records[0],
+          id: "fb-3",
+          submittedAt: "2026-05-28T10:00:00+08:00",
+        },
+      ],
+    };
+    const records = [exportFixture, secondExport].flatMap((source) => mapSurveyExportToFeedback(source));
+    const timeRangeRecords = filterRecordsByDate(records, "2026-05-26", "2026-05-28");
+    const projectOptions = buildProjectOptionsForTimeRange(timeRangeRecords);
+    const singleProjectRecords = filterRecordsByProjectSelection(timeRangeRecords, {
+      mode: "selected",
+      projectNames: ["A 项目：五一售后服务专项"],
+    });
+
+    expect(records[0].projectName).toBe("A 项目：五一售后服务专项");
+    expect(records[0].projectType).toBe("售后服务专项");
+    expect(projectOptions).toEqual([
+      { projectName: "A 项目：五一售后服务专项", projectType: "售后服务专项", totalFeedback: 2 },
+      { projectName: "B 项目：端午售后服务专项", projectType: "售后服务专项", totalFeedback: 1 },
+    ]);
+    expect(projectOptions).toHaveLength(2);
+    expect(projectOptions[0].projectName).toBe("A 项目：五一售后服务专项");
+    expect(projectOptions[1].projectName).toBe("B 项目：端午售后服务专项");
+    expect(buildImportValidationSummary([exportFixture, secondExport]).stats.sourceCount).toBe(2);
+    expect(singleProjectRecords).toHaveLength(2);
+    expect(singleProjectRecords.every((record) => record.projectName === "A 项目：五一售后服务专项")).toBe(true);
+  });
+
+  it("builds the default eight-module auto recap from the current scope", () => {
+    const records = mapSurveyExportToFeedback(exportFixture);
+    const metrics = buildMetricSummary(records);
+    const findings = buildFindingsForScenario(records, "区域/城市下钻");
+    const focusInsights = buildFocusRegionInsights(records);
+    const modules = buildAutoRecapModules({
+      records,
+      metrics,
+      findings,
+      focusInsights,
+      scopeLabel: "2026-05-26 · 全部项目 · 全国",
+    });
+
+    expect(modules.map((module) => module.title)).toEqual([
+      "数据概览",
+      "整体体验表现",
+      "核心问题判断",
+      "时间 / 项目维度复盘",
+      "区域 / 城市 / 服务中心表现",
+      "用户原话证据",
+      "运营动作建议",
+      "可继续追问的问题",
+    ]);
+    expect(modules.every((module) => module.summary.length > 0)).toBe(true);
+    expect(modules.find((module) => module.title === "用户原话证据")?.evidenceQuotes.length).toBeGreaterThan(0);
   });
 
   it("finds good and risky service areas for focus review", () => {

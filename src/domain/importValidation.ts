@@ -30,14 +30,15 @@ const requiredFieldChecks: Array<{
   { label: "城市", isPresent: (record) => isNonEmpty(record.city) },
   { label: "服务中心", isPresent: (record) => isNonEmpty(record.serviceCenter) },
   { label: "服务场景", isPresent: (record) => isNonEmpty(record.serviceScenario) },
-  { label: "评分或 NPS", isPresent: (record) => typeof record.rating === "number" || typeof record.npsScore === "number" },
+  { label: "服务评分或推荐意愿评分", isPresent: (record) => typeof record.rating === "number" || typeof record.npsScore === "number" },
   { label: "开放反馈原话", isPresent: (record) => isNonEmpty(record.feedbackText) },
 ];
 
 export function buildImportValidationSummary(exports: ThirdPartySurveyExport[]): ImportValidationSummary {
   const records = exports.flatMap((item) => item.records);
   const projectNames = new Set(exports.map((item) => item.projectName).filter(Boolean));
-  const sourceLabels = exports.map((item) => `${item.platform} · ${item.sourceName}`);
+  const sourceNames = new Set(exports.map((item) => item.sourceName).filter(Boolean));
+  const sourceLabels = Array.from(new Set(exports.map((item) => `${item.platform} · ${item.sourceName}`)));
   const inferredRange = inferDateRange(records);
   const missingRequired = countMissingRequired(records);
   const ratingCount = records.filter((record) => typeof record.rating === "number").length;
@@ -51,20 +52,23 @@ export function buildImportValidationSummary(exports: ThirdPartySurveyExport[]):
   const items: ImportValidationItem[] = [
     {
       id: "project-consistency",
-      label: "业务项目一致性",
-      status: projectNames.size === 1 && exports.length > 0 ? "pass" : "fail",
-      metric: `${projectNames.size || 0} 个项目名`,
+      label: "业务项目识别",
+      status: projectNames.size > 0 && exports.length > 0 ? "pass" : "fail",
+      metric: `${projectNames.size || 0} 个项目`,
       detail:
-        projectNames.size === 1
-          ? `已识别为同一业务项目，可合并 ${exports.length} 个来源文件。`
-          : "来源文件中项目名称不一致，需要先拆分项目或手动确认归属。",
+        projectNames.size > 0
+          ? `已识别 ${projectNames.size} 个业务项目，可在时间范围内选择全部、单个或多个项目分析。`
+          : "没有识别到业务项目名称，需要先补充项目字段或手动确认归属。",
     },
     {
       id: "source-files",
       label: "来源文件与样本量",
       status: records.length > 0 ? "pass" : "fail",
-      metric: `${exports.length} 个来源 / ${records.length} 条`,
-      detail: records.length > 0 ? `当前来源：${sourceLabels.join("、")}。` : "没有可分析的反馈记录。",
+      metric: `${sourceNames.size} 个文件 / ${exports.length} 个分组 / ${records.length} 条`,
+      detail:
+        records.length > 0
+          ? `当前导入文件：${Array.from(sourceNames).join("、")}。来源渠道：${sourceLabels.join("、")}。`
+          : "没有可分析的反馈记录。",
     },
     {
       id: "time-range",
@@ -85,7 +89,7 @@ export function buildImportValidationSummary(exports: ThirdPartySurveyExport[]):
       metric: `${records.length - missingRequired.affectedRecords}/${records.length}`,
       detail:
         missingRequired.total === 0
-          ? "提交时间、城市、服务中心、服务场景、评分或 NPS、开放反馈原话均可用于分析。"
+          ? "提交时间、城市、服务中心、服务场景、服务评分或推荐意愿评分、开放反馈原话均可用于分析。"
           : `发现 ${missingRequired.affectedRecords} 条记录缺少必填字段，涉及：${missingRequired.labels.join("、")}。`,
     },
     {
@@ -113,7 +117,7 @@ export function buildImportValidationSummary(exports: ThirdPartySurveyExport[]):
   return {
     overallStatus: summarizeStatus(items),
     stats: {
-      sourceCount: exports.length,
+      sourceCount: sourceNames.size,
       recordCount: records.length,
       inferredStart: inferredRange.inferredStart,
       inferredEnd: inferredRange.inferredEnd,

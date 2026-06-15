@@ -12,7 +12,7 @@
 - React
 - TypeScript
 - 普通 CSS
-- 本地 TS mock 数据
+- 标准 CSV 测试数据 + 本地上传解析
 - 规则分析函数，后续可替换为 LLM 分析层
 
 ## 3. 已有目录
@@ -22,15 +22,13 @@ src/
   app/
     App.tsx
   components/
-    SurveyTemplatePreview.tsx
     WorkbenchShell.tsx
     FeedbackPool.tsx
     AnalysisWorkspace.tsx
     ScenarioOutputPanel.tsx
-  data/
-    mockSurveyExports.ts
   domain/
     types.ts
+    csvImport.ts
     taxonomy.ts
     importMapper.ts
     analysisRules.ts
@@ -44,14 +42,14 @@ src/
 ### Phase 1：网页脚手架
 
 - Vite React TypeScript。
-- 两页切换：问卷字段页、报告工作台。
+- 单页工作台：导入区内展示标准 CSV 字段说明，报告工作台作为唯一主入口。
 - 本地 dev server 可启动。
 
-### Phase 2：模拟问卷导入
+### Phase 2：标准 CSV 导入
 
-- 准备 40 条左右模拟反馈。
-- 覆盖问卷星、腾讯问卷、App 内问卷导出。
-- 每个批次包含项目名称、周期、导出来源和提交时间。
+- 提供 10-20 条标准 CSV 测试数据。
+- 覆盖问卷星、腾讯问卷、App 内问卷、短信链接和企微链接。
+- 上传 CSV 后解析项目名称、来源、提交时间、地区、服务中心、评分和原话。
 
 ### Phase 3：运营工作台主路径
 
@@ -77,7 +75,7 @@ src/
 
 ### Phase 6：MVP 前补齐
 
-- Excel / CSV 文件解析。
+- CSV 文件解析已接入；Excel 直读作为后续能力。
 - 字段映射预览。
 - 大样本列表分页或虚拟滚动。
 - 导出报告。
@@ -90,9 +88,9 @@ src/
 | 做成散装工具箱 | 保持项目 / 日期 / 报告 / 下钻主路径 |
 | 只剩 NPS | 扩展评分、满意率、推荐/贬损、低分、授权率、复核项等指标 |
 | 结论不可追溯 | 每个结论绑定证据原话和分数来源 |
-| 样本太小不真实 | MVP 前补充更大模拟样本和分页能力 |
-| 导入不可用 | MVP 必须补 Excel / CSV 解析和字段映射 |
-| 隐私风险 | 只使用模拟和脱敏信息 |
+| 样本太小不真实 | MVP 前补充更大压测样本和分页能力 |
+| 导入不可用 | MVP 必须补字段映射确认和 Excel 直读能力 |
+| 隐私风险 | 只使用测试数据和脱敏信息 |
 
 ## 6. 完成定义
 

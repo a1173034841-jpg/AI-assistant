@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.venv-presidio/
 
 # Build outputs
 dist/
@@ -31,4 +32,5 @@ Thumbs.db
 .vite/
 tmp/
 temp/
-
+test-results/
+.stitch-export/

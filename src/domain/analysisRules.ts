@@ -1,11 +1,14 @@
 import { stageIssueTags, stageKeywords } from "./taxonomy";
 import type {
   AnalysisFinding,
+  AutoRecapModule,
   FeedbackImportRecord,
   FocusRegionInsight,
   MetricSummary,
   EvidenceQuote,
   NormalizedFeedback,
+  ProjectOption,
+  ProjectSelection,
   RegionTree,
   Region,
   Sentiment,
@@ -22,6 +25,21 @@ export type GeoSelection = {
     city: string;
     serviceCenter: string;
   };
+};
+
+export type TimeGrain = "day" | "week" | "month" | "quarter" | "year" | "custom";
+
+export type DateRange = {
+  startDate: string;
+  endDate: string;
+};
+
+export type AutoRecapInput = {
+  records: NormalizedFeedback[];
+  metrics: MetricSummary;
+  findings: AnalysisFinding[];
+  focusInsights: FocusRegionInsight[];
+  scopeLabel: string;
 };
 
 export function buildFindingsForScenario(
@@ -163,6 +181,153 @@ export function buildMetricSummary(records: NormalizedFeedback[]): MetricSummary
   };
 }
 
+export function buildProjectOptionsForTimeRange(records: NormalizedFeedback[]): ProjectOption[] {
+  const projectMap = new Map<string, ProjectOption>();
+
+  for (const record of records) {
+    const existing = projectMap.get(record.projectName);
+    if (!existing) {
+      projectMap.set(record.projectName, {
+        projectName: record.projectName,
+        projectType: record.projectType,
+        totalFeedback: 1,
+      });
+      continue;
+    }
+    existing.totalFeedback += 1;
+  }
+
+  return Array.from(projectMap.values()).sort((a, b) => a.projectName.localeCompare(b.projectName, "zh-CN"));
+}
+
+export function filterRecordsByProjectSelection(
+  records: NormalizedFeedback[],
+  selection: ProjectSelection,
+): NormalizedFeedback[] {
+  if (selection.mode === "all") return records;
+
+  if (selection.mode === "selected") {
+    const projectNames = new Set(selection.projectNames);
+    return records.filter((record) => projectNames.has(record.projectName));
+  }
+
+  const projectTypes = new Set(selection.projectTypes);
+  return records.filter((record) => projectTypes.has(record.projectType));
+}
+
+export function buildAutoRecapModules(input: AutoRecapInput): AutoRecapModule[] {
+  const { records, metrics, findings, focusInsights, scopeLabel } = input;
+  const topFinding = findings[0];
+  const riskFinding = findings.find((finding) => finding.sentiment === "负向") ?? topFinding;
+  const positiveFinding = findings.find((finding) => finding.sentiment === "正向");
+  const evidenceQuotes = findings.flatMap((finding) => finding.evidenceQuotes).slice(0, 4);
+  const projectOptions = buildProjectOptionsForTimeRange(records);
+  const goodInsights = focusInsights.filter((insight) => insight.tone === "good");
+  const riskInsights = focusInsights.filter((insight) => insight.tone === "risk");
+  const projectSummary = projectOptions
+    .slice(0, 3)
+    .map((project) => `${project.projectName} ${project.totalFeedback} 条`)
+    .join("、");
+
+  return [
+    {
+      id: "data-overview",
+      title: "数据概览",
+      question: "本次数据覆盖多少反馈、时间、项目、区域和服务中心？",
+      summary: `${scopeLabel} 当前纳入 ${metrics.totalFeedback} 条反馈，覆盖 ${projectOptions.length} 个项目、${metricValue(metrics, "覆盖城市")} 个城市、${metricValue(metrics, "覆盖服务中心")} 个服务中心。`,
+      dataPoints: [
+        `反馈量：${metrics.totalFeedback} 条`,
+        `项目数：${projectOptions.length} 个`,
+        `来源项目：${projectSummary || "当前范围暂无项目"}`,
+      ],
+      evidenceQuotes: [],
+    },
+    {
+      id: "experience-result",
+      title: "整体体验表现",
+      question: "本期服务体验整体好不好？",
+      summary: `平均服务评分 ${metrics.averageRating}，净推荐值 ${metrics.netPromoterScore}，满意率 ${metrics.satisfactionRate}%。需要结合推荐者、贬损者和低分样本一起判断，不单看一个指标。`,
+      dataPoints: [
+        `平均服务评分：${metrics.averageRating}`,
+        `净推荐值：${metrics.netPromoterScore}`,
+        `推荐者 / 贬损者：${metrics.promoterCount}/${metrics.detractorCount}`,
+      ],
+      evidenceQuotes: evidenceQuotes.slice(0, 2),
+    },
+    {
+      id: "core-issue",
+      title: "核心问题判断",
+      question: "最主要的问题是什么，集中在哪些服务环节？",
+      summary: riskFinding
+        ? `${riskFinding.serviceStage} 是当前优先解释的问题环节。${riskFinding.summary}`
+        : "当前范围没有形成明确负向问题，需要扩大时间或项目范围继续观察。",
+      dataPoints: [
+        `低分反馈：${metrics.lowScoreCount} 条`,
+        `负向占比：${metrics.negativeRate}%`,
+        `高发环节：${metrics.topNegativeStage ?? metrics.topStage ?? "暂无明确环节"}`,
+      ],
+      evidenceQuotes: riskFinding?.evidenceQuotes ?? [],
+      nextAction: riskFinding?.recommendedAction,
+    },
+    {
+      id: "time-project-review",
+      title: "时间 / 项目维度复盘",
+      question: "哪些时间段、哪些项目表现异常或值得复盘？",
+      summary: `当前视角按时间范围优先，再看范围内项目集合。已纳入 ${projectOptions.length} 个项目，运营可以切换单项目、多项目或项目类型继续比较。`,
+      dataPoints: projectOptions.map((project) => `${project.projectName}：${project.totalFeedback} 条 · ${project.projectType}`),
+      evidenceQuotes: [],
+    },
+    {
+      id: "region-center-performance",
+      title: "区域 / 城市 / 服务中心表现",
+      question: "哪些区域做得好，哪些区域需要处理？",
+      summary: `已识别 ${goodInsights.length} 个好区域典型、${riskInsights.length} 个风险区域典型。好区域用于复制服务动作，风险区域进入回访、督办和复盘。`,
+      dataPoints: [
+        `好区域典型：${goodInsights.map((item) => `${item.location}/${item.serviceCenter}`).join("、") || "暂无"}`,
+        `风险区域典型：${riskInsights.map((item) => `${item.location}/${item.serviceCenter}`).join("、") || "暂无"}`,
+      ],
+      evidenceQuotes: focusInsights.flatMap((insight) => insight.evidenceQuotes).slice(0, 4),
+    },
+    {
+      id: "evidence-quotes",
+      title: "用户原话证据",
+      question: "哪些原话支撑报告结论？",
+      summary: evidenceQuotes.length
+        ? `当前报告已抽取 ${evidenceQuotes.length} 条代表性原话。原话必须能追溯到提交时间、服务中心、来源渠道、服务评分和推荐意愿评分。`
+        : "当前范围缺少可引用原话，报告结论需要人工复核。",
+      dataPoints: evidenceQuotes.map((quote) => `${quote.scoreSource.location}：${quote.quote}`),
+      evidenceQuotes,
+    },
+    {
+      id: "operation-actions",
+      title: "运营动作建议",
+      question: "接下来应该先处理什么，谁来跟进，怎么闭环？",
+      summary: riskFinding
+        ? `建议先处理 ${riskFinding.serviceStage} 相关问题，并把低分、已授权联系和高严重度样本拉入闭环清单。`
+        : "当前范围没有高优先级风险，可以优先沉淀正向样本并继续观察。",
+      dataPoints: [
+        `待跟进：${metrics.followUpCount} 条`,
+        `联系授权率：${metrics.contactAuthorizationRate}%`,
+        `需人工复核：${metrics.reviewRequiredCount} 条`,
+      ],
+      evidenceQuotes: riskFinding?.evidenceQuotes ?? [],
+      nextAction: riskFinding?.recommendedAction ?? positiveFinding?.recommendedAction,
+    },
+    {
+      id: "follow-up-questions",
+      title: "可继续追问的问题",
+      question: "运营还可以继续问哪些关键问题？",
+      summary: "系统应支持围绕当前数据继续追问，但只回答本工具、本数据和售后运营分析相关问题。",
+      dataPoints: [
+        "哪个城市低分反馈最集中？",
+        "当前时间范围内哪些项目拖累净推荐值？",
+        "请列出已授权联系且需要回访的低分原话。",
+      ],
+      evidenceQuotes: [],
+    },
+  ];
+}
+
 export function filterRecordsByGeoSelection(records: NormalizedFeedback[], selection: GeoSelection): NormalizedFeedback[] {
   if (selection.serviceCenter) {
     const serviceCenter = selection.serviceCenter;
@@ -186,7 +351,7 @@ export function getScenarioMetricDimensions(metrics: MetricSummary, scenario: Wo
     labels.map((label) => byLabel.get(label)).filter((item): item is NonNullable<typeof item> => Boolean(item));
 
   if (scenario === "服务问题闭环") return pick(["待跟进", "低分反馈", "联系授权率", "需人工复核"]);
-  if (scenario === "满意度归因") return pick(["平均服务评分", "净推荐值（NPS）", "推荐者/贬损者", "负向占比"]);
+  if (scenario === "满意度归因") return pick(["平均服务评分", "净推荐值", "推荐者/贬损者", "负向占比"]);
   if (scenario === "区域/城市下钻") return pick(["反馈量", "风险服务中心", "高发环节", "负向占比"]);
   if (scenario === "活动体验复盘") return pick(["活动反馈", "满意率", "负向占比", "可沉淀正向"]);
   return pick(["可沉淀正向", "口碑风险", "联系授权率", "需人工复核"]);
@@ -208,12 +373,48 @@ export function filterRecordsByDate(
   startDate: string,
   endDate: string,
 ): NormalizedFeedback[] {
-  const start = new Date(`${startDate}T00:00:00+08:00`).getTime();
-  const end = new Date(`${endDate}T23:59:59+08:00`).getTime();
+  const range = normalizeDateRange(startDate, endDate);
+  if (!range.startDate || !range.endDate) return records;
+  const start = parseChinaDate(range.startDate);
+  const end = parseChinaDate(range.endDate) + ONE_DAY_MS - 1;
   return records.filter((record) => {
     const submittedAt = new Date(record.submittedAt).getTime();
     return submittedAt >= start && submittedAt <= end;
   });
+}
+
+export function getTimeGrainDateRange(fullRange: DateRange, timeGrain: TimeGrain): DateRange {
+  const normalizedFullRange = normalizeDateRange(fullRange.startDate, fullRange.endDate);
+  if (timeGrain === "custom") return normalizedFullRange;
+
+  const endTimestamp = parseChinaDate(normalizedFullRange.endDate);
+  const spanDaysByGrain: Record<Exclude<TimeGrain, "custom">, number> = {
+    day: 0,
+    week: 6,
+    month: 29,
+    quarter: 89,
+    year: 364,
+  };
+  const startTimestamp = Math.max(endTimestamp - spanDaysByGrain[timeGrain] * ONE_DAY_MS, parseChinaDate(normalizedFullRange.startDate));
+
+  return {
+    startDate: formatChinaDate(startTimestamp),
+    endDate: normalizedFullRange.endDate,
+  };
+}
+
+export function normalizeDateRange(startDate: string, endDate: string): DateRange {
+  if (!startDate || !endDate) {
+    return { startDate, endDate };
+  }
+
+  const startTimestamp = parseChinaDate(startDate);
+  const endTimestamp = parseChinaDate(endDate);
+  if (Number.isNaN(startTimestamp) || Number.isNaN(endTimestamp) || startTimestamp <= endTimestamp) {
+    return { startDate, endDate };
+  }
+
+  return { startDate: endDate, endDate: startDate };
 }
 
 export function sortRecordsByTime(records: NormalizedFeedback[]): NormalizedFeedback[] {
@@ -485,11 +686,11 @@ function buildMetricDimensions(input: {
     createMetric("反馈量", `${totalFeedback}`, "条", "样本数", "当前项目、时间和地区范围内的有效反馈记录数。"),
     createMetric("平均服务评分", `${average(ratings)}`, "分", "均值", "体验评分字段的平均值，用于判断整体满意度趋势。"),
     createMetric(
-      "净推荐值（NPS）",
+      "净推荐值",
       `${calculateNetPromoterScore(promoterCount, detractorCount, npsRespondentCount)}`,
       "",
       "指数",
-      "NPS = 推荐者占比 - 贬损者占比，只用回答推荐意愿 0-10 分的样本计算，范围为 -100 到 100。负数表示贬损者占比高于推荐者占比。",
+      "净推荐值 = 推荐者占比 - 贬损者占比，只用回答推荐意愿评分 0-10 分的样本计算，范围为 -100 到 100。负数表示贬损者占比高于推荐者占比。",
     ),
     createMetric("推荐者/贬损者", `${promoterCount}/${detractorCount}`, "条", "结构", "前一个数字是推荐者样本数，后一个数字是贬损者样本数。9-10 分为推荐者，0-6 分为贬损者。"),
     createMetric("被动者", `${passiveCount}`, "条", "样本数", "推荐意愿 7-8 分用户数量，通常说明体验可以但不够稳定。"),
@@ -523,7 +724,7 @@ function buildMetricGroups(metricDimensions: ReturnType<typeof buildMetricDimens
     {
       title: "体验结果指标",
       description: "回答本期服务体验整体表现如何。",
-      metrics: pick(["平均服务评分", "净推荐值（NPS）", "满意率", "推荐者/贬损者", "被动者"]),
+      metrics: pick(["平均服务评分", "净推荐值", "满意率", "推荐者/贬损者", "被动者"]),
     },
     {
       title: "问题风险指标",
@@ -546,6 +747,10 @@ function buildMetricGroups(metricDimensions: ReturnType<typeof buildMetricDimens
       metrics: pick(["需人工复核"]),
     },
   ];
+}
+
+function metricValue(metrics: MetricSummary, label: string): string {
+  return metrics.metricDimensions.find((metric) => metric.label === label)?.value ?? "0";
 }
 
 function calculateNetPromoterScore(promoterCount: number, detractorCount: number, npsRespondentCount: number): number {
@@ -678,3 +883,13 @@ function countBy<T extends string>(items: T[]): Array<[T, number]> {
   for (const item of items) counts.set(item, (counts.get(item) ?? 0) + 1);
   return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
 }
+
+function parseChinaDate(value: string): number {
+  return new Date(`${value}T00:00:00+08:00`).getTime();
+}
+
+function formatChinaDate(timestamp: number): string {
+  return new Date(timestamp + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
