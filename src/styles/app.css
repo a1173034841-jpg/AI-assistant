@@ -190,9 +190,24 @@ p {
     color 160ms ease;
 }
 
+.primary-button svg,
+.ghost-button svg,
+.action-list button svg,
+.dashboard-action-bar svg,
+.topbar-actions svg,
+.qa-create-actions svg,
+.composer svg {
+  flex: 0 0 auto;
+  stroke-width: 2.35;
+}
+
 .primary-button {
   color: #fff;
   background: var(--teal);
+}
+
+.primary-button svg {
+  color: #fff;
 }
 
 .primary-button:hover {
@@ -203,6 +218,10 @@ p {
   color: var(--ink);
   background: #fff;
   border: 1px solid var(--border);
+}
+
+.ghost-button svg {
+  color: currentColor;
 }
 
 .topbar .ghost-button {
@@ -2117,6 +2136,70 @@ p {
   min-height: 0;
 }
 
+.dashboard-action-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: stretch;
+  margin: 12px 10px 10px;
+  padding: 12px;
+  border: 1px solid rgba(0, 139, 139, 0.28);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #eefdfb 100%);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+}
+
+.dashboard-action-summary {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+}
+
+.dashboard-action-summary span,
+.dashboard-action-summary strong,
+.dashboard-action-summary small {
+  display: block;
+}
+
+.dashboard-action-summary span {
+  color: var(--teal-dark);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+}
+
+.dashboard-action-summary strong {
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 22px;
+}
+
+.dashboard-action-summary small {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.dashboard-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.dashboard-action-buttons .primary-button,
+.dashboard-action-buttons .ghost-button {
+  min-height: 42px;
+}
+
+.dashboard-action-buttons .strong-action {
+  border-color: rgba(0, 139, 139, 0.32);
+  color: var(--teal-dark);
+  background: #fff;
+}
+
 .drilldown-layout > .drilldown-results-panel,
 .drilldown-layout > .drilldown-side {
   align-self: start;
@@ -2227,7 +2310,7 @@ p {
   grid-template-columns: 54px minmax(0, 1fr);
   gap: 8px;
   margin: 0;
-  padding: 8px 0;
+  padding: 7px 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -2237,8 +2320,8 @@ p {
 
 .path-list span,
 .path-list strong {
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 12px;
+  line-height: 17px;
 }
 
 .path-list span {
@@ -2334,6 +2417,33 @@ p {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
+}
+
+.evidence-page-size {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.evidence-page-size span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+}
+
+.evidence-page-size select {
+  min-height: 32px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .evidence-pool-summary dl div {
@@ -3180,6 +3290,25 @@ p {
   background: var(--red-soft);
 }
 
+.favorite-button svg,
+.delete-thread-button svg,
+.collapse-button svg,
+.primary-nav-item svg,
+.selection-ai-popover svg {
+  stroke-width: 2.35;
+}
+
+.favorite-button,
+.delete-thread-button {
+  border: 1px solid transparent;
+}
+
+.favorite-button:hover,
+.favorite-button.active,
+.delete-thread-button:hover {
+  border-color: currentColor;
+}
+
 .thread.all-active {
   background: var(--surface-soft);
   box-shadow: inset 3px 0 0 var(--muted);
@@ -3534,6 +3663,36 @@ p {
   font-size: 12px;
   line-height: 16px;
   text-align: right;
+}
+
+.suggested-question-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+
+.suggested-question-strip button {
+  max-width: 32%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid rgba(0, 139, 139, 0.22);
+  border-radius: 999px;
+  color: var(--teal-dark);
+  background: var(--teal-soft);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggested-question-strip button:hover {
+  border-color: rgba(0, 139, 139, 0.38);
+  background: #d8f5f1;
 }
 
 .composer {

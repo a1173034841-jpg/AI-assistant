@@ -13,6 +13,7 @@ import {
   LockKeyhole,
   Mail,
   MessageSquareText,
+  MoveRight,
   PanelLeftClose,
   PanelLeftOpen,
   PlusCircle,
@@ -32,6 +33,7 @@ import {
   type AgentRunStage,
 } from "../domain/agentConversation";
 import { buildFindingsForScenario, buildMetricSummary } from "../domain/analysisRules";
+import { answerWorkbenchQuestion, buildSuggestedAgentQuestions } from "../domain/agentRules";
 import { createDeepSeekAgentPort } from "../domain/deepseekAgentPort";
 import { createSupabaseAgentRetrievalPort } from "../domain/supabaseAgentRetrievalPort";
 import { createWorkOrderDraftFromInsight, createWorkOrderEmailDraft, type WorkOrderDraft } from "../domain/workOrder";
@@ -47,6 +49,7 @@ type PrimaryNavId = "new-project" | "projects" | "dashboard" | "query" | "profil
 type StatusTone = "pass" | "warning" | "risk" | "neutral";
 type QaScopeMode = "free" | "filtered";
 type NavIcon = "plus" | "folder" | "chart" | "message" | "settings";
+type EvidencePageSize = 10 | 20 | 50 | 100;
 
 type Evidence = {
   quote: string;
@@ -229,14 +232,7 @@ const primaryNavItems: PrimaryNavItem[] = [
   },
 ];
 
-const metricCards = [
-  { label: "反馈量", value: "1,240", helper: "覆盖 7 个区域 / 42 个服务中心", tone: "neutral" as const },
-  { label: "平均服务评分", value: "4.31", helper: "较上期 -0.18，需关注接待解释", tone: "warning" as const },
-  { label: "净推荐值", value: "31", helper: "推荐者 612 / 贬损者 228", tone: "pass" as const },
-  { label: "低分反馈", value: "164", helper: "集中在等待、解释、交付复发", tone: "risk" as const },
-];
-
-const rawFeedbackPageSize = 20;
+const evidencePageSizeOptions: EvidencePageSize[] = [10, 20, 50, 100];
 
 const evidenceQuotes: Evidence[] = [
   {
@@ -521,7 +517,7 @@ const secondaryPanelCopy: Record<string, { title: string; text: string; metrics:
   "dashboard-overview": {
     title: "总览",
     text: "默认展示当前项目、时间、区域和服务中心范围，以及核心指标、风险对象和下一步动作。",
-    metrics: ["反馈量 1,240", "NPS 31", "风险对象 3 个"],
+    metrics: ["全部项目", "当前范围联动", "风险对象同步"],
   },
   "dashboard-time": {
     title: "时间维度",
@@ -702,8 +698,8 @@ const secondaryWorkspaceCopy: Record<string, {
     title: "当前范围和核心指标",
     summary: "先看当前范围、核心指标和风险对象，再决定是否进入报告或 AI 问答。",
     items: [
-      { title: "当前范围", text: "2026-05 / 全部项目 / 全国。", status: "默认", tone: "neutral" },
-      { title: "核心指标", text: "反馈量、评分、NPS、低分反馈。", status: "已更新", tone: "pass" },
+      { title: "当前范围", text: "全部时间 / 全部项目 / 全国。", status: "默认", tone: "neutral" },
+      { title: "核心指标", text: "反馈量、评分、NPS、低分反馈随筛选更新。", status: "已更新", tone: "pass" },
       { title: "风险对象", text: "杭州西溪、成都高新、北京望京。", status: "3 个", tone: "warning" },
     ],
     action: "查看总览",
@@ -816,7 +812,6 @@ function WorkbenchApp() {
   const [appliedFilter, setAppliedFilter] = useState<DrilldownFilter>(defaultDrilldownFilter);
   const [qaScopeMode, setQaScopeMode] = useState<QaScopeMode>("free");
   const [pendingQaQuestion, setPendingQaQuestion] = useState("");
-  const [qaViewKey, setQaViewKey] = useState(0);
   const activeMeta = screenMeta[activeScreen];
   const activePrimary = useMemo(
     () => activePrimaryId ? primaryNavItems.find((item) => item.id === activePrimaryId) ?? null : null,
@@ -856,7 +851,6 @@ function WorkbenchApp() {
     if (screen === "query") {
       setQaScopeMode("free");
       setPendingQaQuestion("");
-      setQaViewKey((value) => value + 1);
     }
     setActiveScreen(screen);
   };
@@ -878,7 +872,6 @@ function WorkbenchApp() {
   const openFilteredQa = (filter: DrilldownFilter) => {
     setAppliedFilter(filter);
     setQaScopeMode("filtered");
-    setQaViewKey((value) => value + 1);
     setActivePrimaryId("query");
     setActiveSecondaryId("qa-new");
     setActiveScreen("query");
@@ -890,7 +883,6 @@ function WorkbenchApp() {
     setAppliedFilter(filter);
     setPendingQaQuestion(question);
     setQaScopeMode("filtered");
-    setQaViewKey((value) => value + 1);
     setActivePrimaryId("query");
     setActiveSecondaryId("qa-new");
     setActiveScreen("query");
@@ -958,13 +950,11 @@ function WorkbenchApp() {
           {activeScreen === "report" ? <ReportScreen activeSecondaryId={activeSecondary?.id ?? "dashboard-report"} appliedFilter={appliedFilter} onAction={notify} /> : null}
           {activeScreen === "query" ? (
             <AiQaScreen
-              key={`${qaViewKey}-${qaScopeMode}-${pendingQaQuestion}-${activeSecondary?.id ?? "qa-new"}`}
               appliedFilter={appliedFilter}
               initialScopeMode={qaScopeMode}
               initialQuestion={pendingQaQuestion}
               onPendingQuestionHandled={() => {
                 setPendingQaQuestion("");
-                setQaScopeMode("free");
               }}
               onAction={notify}
               activeSecondaryId={activeSecondary?.id ?? "qa-new"}
@@ -1026,7 +1016,7 @@ function Header({ appliedFilter, onAction }: { appliedFilter: DrilldownFilter; o
       buildSummaryText(),
       "",
       "## 核心指标",
-      ...metricCards.map((metric) => `- ${metric.label}：${metric.value}（${metric.helper}）`),
+      ...buildScopeMetricCards(appliedFilter).map((metric) => `- ${metric.label}：${metric.value}（${metric.helper}）`),
       "",
       "## 重点证据",
       ...evidenceQuotes.map((item, index) => `${index + 1}. ${item.quote}（${item.location}，${item.rating}，${item.nps}）`),
@@ -1607,7 +1597,7 @@ function ImportInitialReportPage({ onAction }: { onAction: (message: string) => 
           <StatusBadge tone="pass">{reportGenerated ? "已生成" : "可生成"}</StatusBadge>
         </div>
         <div className="report-summary-band">
-          {metricCards.map((metric) => (
+          {buildScopeMetricCards(defaultDrilldownFilter).map((metric) => (
             <MetricCard key={metric.label} {...metric} />
           ))}
         </div>
@@ -2145,6 +2135,7 @@ function DrilldownScreen({
   const [workOrderDraft, setWorkOrderDraft] = useState<WorkOrderDraft | null>(null);
   const filteredRows = filterDrilldownRows(filterState);
   const riskRows = filteredRows.filter((row) => row[5] !== "低");
+  const scopeMetrics = buildScopeMetricCards(filterState, filteredRows);
   const availableCities = getCitiesByRegions(filterState.selectedRegions);
   const availableCenters = getCentersByCities(filterState.selectedRegions, filterState.selectedCities);
   const dashboardRoute = getDashboardRouteConfig(activeSecondaryId);
@@ -2456,7 +2447,7 @@ function DrilldownScreen({
     return (
       <>
         <div className="metric-grid">
-          {metricCards.map((metric) => (
+          {scopeMetrics.map((metric) => (
             <MetricCard key={metric.label} {...metric} />
           ))}
         </div>
@@ -2501,29 +2492,27 @@ function DrilldownScreen({
           <StatusBadge tone={riskRows.length ? "warning" : "pass"}>{riskRows.length} 个风险对象</StatusBadge>
         </div>
         {renderResultContent()}
-        <div className="metric-action-bar">
-          <div>
-            <strong>反馈原文池</strong>
-            <span>{getCurrentScopeRawFeedbackTotal(filterState, filteredRows).toLocaleString()} 条</span>
-          </div>
-          <button className="ghost-button" type="button" onClick={() => setRawFeedbackOpen((value) => !value)}>
-            {rawFeedbackOpen ? "收起原文池" : "打开原文池"}
-          </button>
-        </div>
+        <DashboardActionBar
+          filterState={filterState}
+          filteredRows={filteredRows}
+          rawFeedbackOpen={rawFeedbackOpen}
+          canCreateWorkOrder={filterState.selectedCenters.length > 0 && filterState.selectedTopics.length > 0}
+          showWorkOrderAction={activeSecondaryId !== "dashboard-overview"}
+          onToggleRawFeedback={() => setRawFeedbackOpen((value) => !value)}
+          onGoReport={goReport}
+          onGoQa={goQa}
+          onCreateWorkOrder={createWorkOrder}
+        />
         {rawFeedbackOpen ? (
           <EvidenceList compact filterState={filterState} filteredRows={filteredRows} />
         ) : null}
       </section>
       <DrilldownSidePanel
-        activeSecondaryId={activeSecondaryId}
         filterState={filterState}
         filteredRows={filteredRows}
         riskRows={riskRows}
         workOrderDraft={workOrderDraft}
         onAction={onAction}
-        onGoReport={goReport}
-        onGoQa={goQa}
-        onCreateWorkOrder={createWorkOrder}
       />
       {selectionAi ? (
         <button
@@ -2567,9 +2556,12 @@ function DrilldownScreen({
 function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSecondaryId: string; appliedFilter: DrilldownFilter; onAction: (message: string) => void }) {
   const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
   const selectedReport = selectedScenario ? scenarioReports[selectedScenario] : null;
-  const filterScope = buildDrilldownScope(appliedFilter);
-  const reportRows = filterDrilldownRows(appliedFilter);
+  const effectiveReportFilter = buildReportFilter(appliedFilter, selectedScenario);
+  const filterScope = buildDrilldownScope(effectiveReportFilter);
+  const reportRows = filterDrilldownRows(effectiveReportFilter);
   const reportRiskRows = reportRows.filter((row) => row[5] !== "低");
+  const reportMetrics = buildScopeMetricCards(effectiveReportFilter, reportRows);
+  const reportTotal = getCurrentScopeRawFeedbackTotal(effectiveReportFilter, reportRows);
   const reportTitle = selectedScenario ?? "总复盘";
   const reportHeadline = selectedReport?.headline ?? "服务体验整体稳定，等待与解释问题拉低低分样本";
   const reportSummary = selectedReport?.summary ?? "本期总复盘汇总整体样本、核心指标、重点风险对象和可执行动作。";
@@ -2623,7 +2615,7 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
           </div>
         </div>
         <div className="report-summary-band">
-          {metricCards.map((metric) => (
+          {reportMetrics.map((metric) => (
             <MetricCard key={metric.label} {...metric} />
           ))}
         </div>
@@ -2635,7 +2627,7 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
           </div>
           <p>{reportSummary}</p>
           <ul>
-            {(selectedReport?.bullets ?? ["整体样本量 1,240 条，覆盖 7 个区域和 42 个服务中心。", "低分反馈集中在等待时间、解释不清和预约同步异常。", "建议先从风险服务中心和可回访低分样本开始闭环。"]).map((item) => (
+            {(selectedReport?.bullets ?? [`当前范围命中 ${reportTotal.toLocaleString()} 条反馈，覆盖 ${reportRows.length} 个服务中心。`, "低分反馈集中在等待时间、解释不清和预约同步异常。", "建议先从风险服务中心和可回访低分样本开始闭环。"]).map((item) => (
               <li key={item}>{item}</li>
             ))}
           </ul>
@@ -2656,7 +2648,7 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
         </div>
         <EvidenceList
           compact
-          filterState={appliedFilter}
+          filterState={effectiveReportFilter}
           filteredRows={reportRows}
           label="报告引用证据"
           heading="按当前范围分页"
@@ -2716,8 +2708,8 @@ function AiQaScreen({
     () => (initialQuestion ? [{ id: "dashboard-user", role: "user", text: initialQuestion }] : []),
     [initialQuestion],
   );
-  const initialAutoRunRef = useRef(false);
   const draftConversationIdRef = useRef<string | null>(initialQuestion ? "dashboard-new" : null);
+  const handledInitialQuestionRef = useRef("");
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [contextProjectId, setContextProjectId] = useState<string | null>(null);
   const [scopeMode, setScopeMode] = useState<QaScopeMode>(initialScopeMode);
@@ -2762,6 +2754,13 @@ function AiQaScreen({
       : entryScope;
   const agentProgressSteps = agentProgressStage ? buildAgentProgressSteps(agentProgressStage) : [];
   const progressPercent = agentProgressStage ? getAgentProgressPercent(agentProgressStage) : 0;
+  const records = useMemo(() => buildQaAgentRecords(appliedFilter, contextProject), [appliedFilter, contextProject]);
+  const metrics = useMemo(() => buildMetricSummary(records), [records]);
+  const findings = useMemo(() => buildFindingsForScenario(records, "服务问题闭环"), [records]);
+  const suggestedQuestions = useMemo(
+    () => buildSuggestedAgentQuestions({ records, metrics, findings, scopeLabel: buildQaAgentScopeLabel(appliedFilter, contextProject) }),
+    [records, metrics, findings, appliedFilter, contextProject],
+  );
 
   const runQuestion = async (text: string) => {
     const trimmed = text.trim();
@@ -2780,9 +2779,6 @@ function AiQaScreen({
       text: trimmed,
     };
     const pendingTurns = [...previousTurns, userMessage];
-    const records = buildQaAgentRecords(appliedFilter, contextProject);
-    const metrics = buildMetricSummary(records);
-    const findings = buildFindingsForScenario(records, "服务问题闭环");
     const scopeLabel = buildQaAgentScopeLabel(appliedFilter, contextProject);
     let latestStreamText = "";
 
@@ -2795,6 +2791,17 @@ function AiQaScreen({
     setActiveEvidenceQuotes([]);
     setAgentProgressStage("prepare-context");
     setIsRunning(true);
+    setConversationThreads((current) => {
+      const pendingThread: QaThread = {
+        id: nextThreadId,
+        title,
+        meta: "查询中",
+        turns: pendingTurns,
+        evidenceQuotes: [],
+      };
+      const withoutCurrent = current.filter((thread) => thread.id !== nextThreadId);
+      return [pendingThread, ...withoutCurrent];
+    });
 
     try {
       const answer = await appAgentPort.answer({
@@ -2833,30 +2840,53 @@ function AiQaScreen({
       });
       onAction(answer.refused ? "AI 问答返回边界提示" : `AI 问答已返回结果：「${title}」`);
     } catch {
+      const fallbackAnswer = answerWorkbenchQuestion({
+        question: trimmed,
+        records,
+        metrics,
+        findings,
+        scopeLabel,
+      });
       const errorTurns: QaMessage[] = [
-        ...previousTurns,
-        userMessage,
+        ...pendingTurns,
         {
-          id: `${nextThreadId}-answer-error`,
+          id: `${nextThreadId}-answer-fallback-${previousTurns.length + 2}`,
           role: "assistant",
-          text: "AI 问答请求失败，请检查 API Key、网络或后端代理配置后重试。",
+          text: `模型接口暂未返回，已用当前范围数据先生成结果：${fallbackAnswer.content}`,
         },
       ];
       setActiveMessages(errorTurns);
-      setActiveEvidenceQuotes([]);
-      onAction("AI 问答请求失败");
+      setActiveEvidenceQuotes(fallbackAnswer.evidenceQuotes);
+      setConversationThreads((current) => {
+        const fallbackThread: QaThread = {
+          id: nextThreadId,
+          title,
+          meta: `${Math.ceil(errorTurns.length / 2)} 轮问答 / ${fallbackAnswer.evidenceQuotes.length} 条引用证据`,
+          turns: errorTurns,
+          evidenceQuotes: fallbackAnswer.evidenceQuotes,
+        };
+        const withoutCurrent = current.filter((thread) => thread.id !== nextThreadId);
+        return [fallbackThread, ...withoutCurrent];
+      });
+      onAction(`AI 问答已返回本地数据结果：「${title}」`);
     } finally {
+      draftConversationIdRef.current = null;
       setIsRunning(false);
       setStreamingAnswer("");
     }
   };
 
   useEffect(() => {
-    if (!initialQuestion || initialAutoRunRef.current) return;
-    initialAutoRunRef.current = true;
+    if (!initialQuestion || handledInitialQuestionRef.current === initialQuestion) return;
+    handledInitialQuestionRef.current = initialQuestion;
     void runQuestion(initialQuestion);
     onPendingQuestionHandled();
   }, [initialQuestion]);
+
+  useEffect(() => {
+    if (initialQuestion) return;
+    setScopeMode(initialScopeMode);
+  }, [initialScopeMode, initialQuestion]);
 
   const submitQuestion = () => {
     void runQuestion(question);
@@ -2915,6 +2945,20 @@ function AiQaScreen({
     if (!selectedThreadForView && activeMessages.length === 0) {
       onAction("请先发送一个具体问题，再保存问答记录");
       return;
+    }
+    if (selectedThreadId && activeMessages.length > 0) {
+      const firstQuestion = activeMessages.find((message) => message.role === "user")?.text ?? "当前回答";
+      const savedThread: QaThread = {
+        id: selectedThreadId,
+        title: selectedThreadForView?.title ?? buildAutoConversationTitle(firstQuestion),
+        meta: `${Math.ceil(activeMessages.length / 2)} 轮问答 / ${activeEvidenceQuotes.length} 条引用证据`,
+        turns: activeMessages,
+        evidenceQuotes: activeEvidenceQuotes,
+      };
+      setConversationThreads((current) => {
+        const withoutCurrent = current.filter((thread) => thread.id !== selectedThreadId);
+        return [savedThread, ...withoutCurrent];
+      });
     }
     setAnswerSaved(true);
     onAction("已保存到问答记录");
@@ -3083,6 +3127,21 @@ function AiQaScreen({
             </div>
           ) : null}
           {agentProgressSteps.length ? <small className="query-progress-percent">{progressPercent}%</small> : null}
+        </div>
+        <div className="suggested-question-strip" aria-label="建议追问">
+          {suggestedQuestions.slice(0, 3).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => {
+                setQuestion(item);
+                onAction("已填入建议追问");
+              }}
+              disabled={isRunning}
+            >
+              {item}
+            </button>
+          ))}
         </div>
         <div className="composer">
           <textarea
@@ -3454,31 +3513,21 @@ function CurrentScopeCard({
 }
 
 function DrilldownSidePanel({
-  activeSecondaryId,
   filterState,
   filteredRows,
   riskRows,
   workOrderDraft,
   onAction,
-  onGoReport,
-  onGoQa,
-  onCreateWorkOrder,
 }: {
-  activeSecondaryId: string;
   filterState: DrilldownFilter;
   filteredRows: string[][];
   riskRows: string[][];
   workOrderDraft: WorkOrderDraft | null;
   onAction: (message: string) => void;
-  onGoReport: () => void;
-  onGoQa: () => void;
-  onCreateWorkOrder: () => void;
 }) {
   const currentObject = filterState.selectedCenters.length
     ? buildSelectionLabel(filterState.selectedCenters, "全部服务中心")
     : buildAreaScope(filterState.selectedRegions, filterState.selectedCities, filterState.selectedCenters);
-  const canCreateWorkOrder = filterState.selectedCenters.length > 0 && filterState.selectedTopics.length > 0;
-  const showWorkOrderAction = activeSecondaryId !== "dashboard-overview";
 
   return (
     <aside className="side-stack drilldown-side">
@@ -3495,26 +3544,64 @@ function DrilldownSidePanel({
           <p><span>区域</span><strong>{buildSelectionLabel(filterState.selectedRegions, "全国")}</strong></p>
           <p><span>城市</span><strong>{buildSelectionLabel(filterState.selectedCities, "全部城市")}</strong></p>
           <p><span>中心</span><strong>{buildSelectionLabel(filterState.selectedCenters, "全部服务中心")}</strong></p>
-          <p><span>结果</span><strong>{filteredRows.length} 个服务中心 / {riskRows.length} 个风险对象</strong></p>
-        </div>
-      </section>
-      <section className="panel drilldown-actions-panel">
-        <div className="panel-head compact">
-          <div>
-            <p>下一步</p>
-            <h2>按当前范围生成</h2>
-          </div>
-        </div>
-        <div className="action-list">
-          <button type="button" onClick={onGoReport}>进入报告输出</button>
-          <button type="button" onClick={onGoQa}>进入 AI 问答</button>
-          {showWorkOrderAction ? (
-            <button type="button" disabled={!canCreateWorkOrder} onClick={onCreateWorkOrder}>生成服务中心工单</button>
-          ) : null}
+          <p><span>结果</span><strong>{getCurrentScopeRawFeedbackTotal(filterState, filteredRows).toLocaleString()} 条 / {riskRows.length} 个风险对象</strong></p>
         </div>
       </section>
       {workOrderDraft ? <WorkOrderDraftCard draft={workOrderDraft} onAction={onAction} /> : null}
     </aside>
+  );
+}
+
+function DashboardActionBar({
+  filterState,
+  filteredRows,
+  rawFeedbackOpen,
+  canCreateWorkOrder,
+  showWorkOrderAction,
+  onToggleRawFeedback,
+  onGoReport,
+  onGoQa,
+  onCreateWorkOrder,
+}: {
+  filterState: DrilldownFilter;
+  filteredRows: string[][];
+  rawFeedbackOpen: boolean;
+  canCreateWorkOrder: boolean;
+  showWorkOrderAction: boolean;
+  onToggleRawFeedback: () => void;
+  onGoReport: () => void;
+  onGoQa: () => void;
+  onCreateWorkOrder: () => void;
+}) {
+  const total = getCurrentScopeRawFeedbackTotal(filterState, filteredRows);
+  return (
+    <div className="dashboard-action-bar">
+      <div className="dashboard-action-summary">
+        <span>当前筛选范围</span>
+        <strong>{buildDrilldownScope(filterState)}</strong>
+        <small>{total.toLocaleString()} 条命中原文 / {filteredRows.length} 个服务中心</small>
+      </div>
+      <div className="dashboard-action-buttons">
+        <button className="ghost-button" type="button" onClick={onToggleRawFeedback}>
+          <FileSpreadsheet size={15} />
+          {rawFeedbackOpen ? "收起原文池" : "打开原文池"}
+        </button>
+        <button className="primary-button" type="button" onClick={onGoReport}>
+          <MoveRight size={15} />
+          进入报告输出
+        </button>
+        <button className="primary-button" type="button" onClick={onGoQa}>
+          <MessageSquareText size={15} />
+          AI 问答
+        </button>
+        {showWorkOrderAction ? (
+          <button className="ghost-button strong-action" type="button" disabled={!canCreateWorkOrder} onClick={onCreateWorkOrder}>
+            <Mail size={15} />
+            生成服务工单
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -3705,13 +3792,14 @@ function EvidenceList({
     [filterState, filteredRows, isScopedPool],
   );
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<EvidencePageSize>(20);
   const total = isScopedPool
     ? getCurrentScopeRawFeedbackTotal(filterState ?? defaultDrilldownFilter, filteredRows ?? drilldownRows)
     : evidenceQuotes.length;
-  const pageSize = isScopedPool ? rawFeedbackPageSize : evidenceQuotes.length;
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const startIndex = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const endIndex = Math.min(total, page * pageSize);
+  const activePageSize = isScopedPool ? pageSize : evidenceQuotes.length;
+  const pageCount = Math.max(1, Math.ceil(total / activePageSize));
+  const startIndex = total === 0 ? 0 : (page - 1) * activePageSize + 1;
+  const endIndex = Math.min(total, page * activePageSize);
   const items = isScopedPool
     ? buildRawFeedbackPage(filterState ?? defaultDrilldownFilter, filteredRows ?? drilldownRows, startIndex, endIndex)
     : evidenceQuotes.map((item, index) => ({
@@ -3742,8 +3830,22 @@ function EvidenceList({
           <dl>
             <div><dt>命中原文</dt><dd>{total.toLocaleString()} 条</dd></div>
             <div><dt>当前显示</dt><dd>{startIndex}-{endIndex} 条</dd></div>
-            <div><dt>每页数量</dt><dd>{pageSize} 条</dd></div>
+            <div><dt>每页数量</dt><dd>{activePageSize} 条</dd></div>
           </dl>
+          <label className="evidence-page-size">
+            <span>每页显示</span>
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value) as EvidencePageSize);
+                setPage(1);
+              }}
+            >
+              {evidencePageSizeOptions.map((option) => (
+                <option key={option} value={option}>{option} 条</option>
+              ))}
+            </select>
+          </label>
         </div>
       ) : (
         <div className="evidence-reference-note">
@@ -4209,6 +4311,60 @@ function buildTopicScope(selectedTopics: string[]): string {
   return `${selectedTopics.length} 个主题：${selectedTopics.join("、")}`;
 }
 
+function buildReportFilter(filter: DrilldownFilter, scenario: string | null): DrilldownFilter {
+  if (!scenario) return filter;
+  const scenarioTopics: Record<string, string[]> = {
+    服务问题闭环: ["等待时间", "解释不清"],
+    满意度归因: ["等待时间", "解释不清", "移动服务"],
+    区域城市督查端: ["等待时间", "App 同步", "交付解释"],
+    活动体验复盘: ["交付解释", "移动服务"],
+    口碑投诉与风险: ["等待时间", "解释不清", "App 同步"],
+  };
+  return {
+    ...filter,
+    selectedTopics: scenarioTopics[scenario] ?? filter.selectedTopics,
+  };
+}
+
+function buildScopeMetricCards(filter: DrilldownFilter, filteredRows = filterDrilldownRows(filter)) {
+  const total = getCurrentScopeRawFeedbackTotal(filter, filteredRows);
+  const rowFeedbackTotal = getRowFeedbackTotal(filteredRows);
+  const weightedScore = getWeightedAverageRating(filteredRows);
+  const riskCount = filteredRows.filter((row) => row[5] !== "低").length;
+  const highScoreFeedback = Math.round(total * getPositiveRatio(filteredRows));
+  const lowScoreFeedback = Math.round(total * getRiskRatio(filteredRows));
+  const nps = Math.max(-100, Math.min(100, Math.round(((highScoreFeedback - lowScoreFeedback) / Math.max(total, 1)) * 100)));
+  const areaCount = uniqueColumn(filteredRows, 0).length;
+  const centerCount = filteredRows.length;
+
+  return [
+    {
+      label: "反馈量",
+      value: total.toLocaleString(),
+      helper: `覆盖 ${areaCount} 个区域 / ${centerCount} 个服务中心`,
+      tone: "neutral" as const,
+    },
+    {
+      label: "平均服务评分",
+      value: weightedScore.toFixed(2),
+      helper: filteredRows.length ? "按当前范围服务中心加权" : "当前范围暂无服务中心",
+      tone: weightedScore < 4.2 ? "warning" as const : "pass" as const,
+    },
+    {
+      label: "净推荐值",
+      value: String(nps),
+      helper: `高分反馈 ${highScoreFeedback.toLocaleString()} / 低分反馈 ${lowScoreFeedback.toLocaleString()}`,
+      tone: nps < 20 ? "warning" as const : "pass" as const,
+    },
+    {
+      label: "低分反馈",
+      value: lowScoreFeedback.toLocaleString(),
+      helper: riskCount ? `${riskCount} 个风险对象，优先看原文和工单` : "当前范围暂无风险对象",
+      tone: lowScoreFeedback > 0 ? "risk" as const : "pass" as const,
+    },
+  ];
+}
+
 function buildSelectionLabel(items: string[], emptyLabel: string): string {
   if (items.length === 0) return emptyLabel;
   if (items.length === 1) return items[0];
@@ -4252,9 +4408,21 @@ function filterDrilldownRows(filter: DrilldownFilter): string[][] {
     const regionMatched = filter.selectedRegions.length === 0 || filter.selectedRegions.includes(row[0]);
     const cityMatched = filter.selectedCities.length === 0 || filter.selectedCities.includes(row[1]);
     const centerMatched = filter.selectedCenters.length === 0 || filter.selectedCenters.includes(row[2]);
-    const topicMatched = filter.selectedTopics.length === 0 || filter.selectedTopics.some((topic) => row[6].includes(topic) || row[6].toLowerCase().includes(topic.toLowerCase()));
+    const rowTopics = getRowTopics(row);
+    const topicMatched = filter.selectedTopics.length === 0 || filter.selectedTopics.some((topic) => rowTopics.includes(topic));
     return regionMatched && cityMatched && centerMatched && topicMatched;
   });
+}
+
+function getRowTopics(row: string[]): string[] {
+  const reason = row[6];
+  const topics = new Set<string>();
+  if (reason.includes("等待")) topics.add("等待时间");
+  if (reason.includes("解释")) topics.add("解释不清");
+  if (reason.includes("App") || reason.includes("同步")) topics.add("App 同步");
+  if (reason.includes("交付")) topics.add("交付解释");
+  if (reason.includes("移动")) topics.add("移动服务");
+  return Array.from(topics);
 }
 
 function projectCountValue(project: ImportedProject): number {
@@ -4263,6 +4431,42 @@ function projectCountValue(project: ImportedProject): number {
 
 function totalProjectCount(projects: ImportedProject[]): string {
   return projects.reduce((sum, project) => sum + projectCountValue(project), 0).toLocaleString();
+}
+
+function getRowFeedbackTotal(rows: string[][]): number {
+  return rows.reduce((sum, row) => sum + Number(row[3].replace(/,/g, "")), 0);
+}
+
+function getWeightedAverageRating(rows: string[][]): number {
+  const total = getRowFeedbackTotal(rows);
+  if (total === 0) return 0;
+  const weighted = rows.reduce((sum, row) => {
+    const count = Number(row[3].replace(/,/g, ""));
+    const rating = Number(row[4]);
+    return sum + count * (Number.isFinite(rating) ? rating : 0);
+  }, 0);
+  return weighted / total;
+}
+
+function getRiskRatio(rows: string[][]): number {
+  if (rows.length === 0) return 0;
+  const weightedRisk = rows.reduce((sum, row) => {
+    const count = Number(row[3].replace(/,/g, ""));
+    const riskRatio = row[5] === "高" ? 0.26 : row[5] === "中" ? 0.16 : 0.05;
+    return sum + count * riskRatio;
+  }, 0);
+  return weightedRisk / Math.max(getRowFeedbackTotal(rows), 1);
+}
+
+function getPositiveRatio(rows: string[][]): number {
+  if (rows.length === 0) return 0;
+  const weightedPositive = rows.reduce((sum, row) => {
+    const count = Number(row[3].replace(/,/g, ""));
+    const rating = Number(row[4]);
+    const positiveRatio = rating >= 4.7 ? 0.64 : rating >= 4.3 ? 0.52 : rating >= 4.1 ? 0.44 : 0.34;
+    return sum + count * positiveRatio;
+  }, 0);
+  return weightedPositive / Math.max(getRowFeedbackTotal(rows), 1);
 }
 
 function getActiveProjectsForFilter(filter: DrilldownFilter): ImportedProject[] {
@@ -4286,10 +4490,15 @@ function getCurrentScopeRawFeedbackTotal(filter: DrilldownFilter, filteredRows: 
 
   if (!hasRowScope) return projectTotal;
 
-  const rowTotal = filteredRows.reduce((sum, row) => sum + Number(row[3].replace(/,/g, "")), 0);
+  const rowTotal = getRowFeedbackTotal(filteredRows);
   if (rowTotal === 0) return 0;
 
-  return filter.selectedProjectIds.length ? Math.min(projectTotal, rowTotal) : rowTotal;
+  const baseRowTotal = getRowFeedbackTotal(drilldownRows);
+  if (!filter.selectedRegions.length && !filter.selectedCities.length && !filter.selectedCenters.length && filter.selectedTopics.length) {
+    return Math.round(projectTotal * (rowTotal / Math.max(baseRowTotal, 1)));
+  }
+
+  return rowTotal;
 }
 
 function buildRawFeedbackPage(

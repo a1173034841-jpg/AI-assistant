@@ -36,33 +36,33 @@ export type QaConversationRecord = {
 const progressStepDefinitions: Array<Omit<AgentProgressStep, "status">> = [
   {
     id: "prepare-context",
-    label: "整理当前报告上下文",
-    description: "读取筛选范围、指标、结论和原话证据。",
+    label: "整理范围",
+    description: "读取当前筛选范围、指标和可用原话证据。",
   },
   {
     id: "check-scope",
-    label: "判断问题是否相关",
-    description: "只处理当前工具和售后运营分析相关问题。",
+    label: "检查边界",
+    description: "确认问题属于售后运营数据可回答范围。",
   },
   {
     id: "retrieve-database",
-    label: "检索模拟数据库 Chunk",
-    description: "从 Supabase 模拟问卷数据中召回最接近当前问题的证据片段。",
+    label: "检索证据",
+    description: "从当前数据和向量检索结果中召回相关证据片段。",
   },
   {
     id: "requesting-model",
-    label: "提交追问",
-    description: "把当前报告上下文、数据库 Chunk 和用户问题提交给追问 Agent。",
+    label: "请求模型",
+    description: "把范围、证据和问题提交给问答模型。",
   },
   {
     id: "streaming-answer",
-    label: "流式生成回答",
-    description: "追问 Agent 正在逐段返回自然语言回答。",
+    label: "返回结果",
+    description: "问答模型正在逐段返回回答。",
   },
   {
     id: "archive-turn",
-    label: "归档本次追问",
-    description: "保存问题、答案、追问时间和报告范围。",
+    label: "保存记录",
+    description: "保存问题、答案、时间和范围。",
   },
 ];
 

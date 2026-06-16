@@ -123,6 +123,35 @@ async function expectVisibleTertiaryPanelsScrollable(page, label) {
   checks.push(label);
 }
 
+async function expectSmallRouteIconsVisible(page, label) {
+  const issues = await page.evaluate(() => {
+    const icons = Array.from(document.querySelectorAll("button svg, a.primary-button svg, .primary-nav-item svg"));
+    return icons.map((icon) => {
+      const rect = icon.getBoundingClientRect();
+      const style = window.getComputedStyle(icon);
+      const color = style.color || style.stroke;
+      const strokeWidth = Number(icon.getAttribute("stroke-width") || style.strokeWidth || 0);
+      return {
+        html: icon.outerHTML.slice(0, 80),
+        width: rect.width,
+        height: rect.height,
+        color,
+        opacity: Number(style.opacity || 1),
+        strokeWidth,
+      };
+    }).filter((icon) =>
+      icon.width > 0 &&
+      icon.height > 0 &&
+      icon.width <= 18 &&
+      icon.height <= 18 &&
+      (icon.opacity < 0.55 || icon.color === "rgba(0, 0, 0, 0)" || icon.strokeWidth < 1.8),
+    ).slice(0, 8);
+  });
+
+  if (issues.length) throw new Error(`${label}: weak small icons ${JSON.stringify(issues)}`);
+  checks.push(label);
+}
+
 async function main() {
   const browser = await chromium.launch({ channel: "chrome" });
   const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 900 } });
@@ -203,7 +232,7 @@ async function main() {
   await clickPrimary(page, "报告仪表盘");
   await expectRoutePanel(page, "dashboard-overview", "dashboard overview route");
   await expectText(page, "全部时间 / 全部项目 / 全国 / 全部主题", "dashboard overview starts without a time filter");
-  const overviewWorkOrderButtons = await page.locator(".drilldown-side").getByRole("button", { name: "生成服务中心工单" }).count();
+  const overviewWorkOrderButtons = await page.locator(".drilldown-side").getByRole("button", { name: "生成服务工单" }).count();
   if (overviewWorkOrderButtons > 0) throw new Error("dashboard overview should not show work order generation before a concrete issue is selected");
   checks.push("dashboard overview does not expose work order generation");
   await expectText(page, "筛选范围", "dashboard has one scope filter secondary entry");
@@ -238,7 +267,7 @@ async function main() {
 
   await clickPrimary(page, "报告仪表盘");
   await expectText(page, "全部时间 / 五一售后服务专项 / 全国 / 全部主题", "dashboard keeps applied project filter after returning from report");
-  await page.getByRole("button", { name: "进入 AI 问答" }).click();
+  await page.locator(".dashboard-action-bar").getByRole("button", { name: "AI 问答" }).click();
   await expectText(page, "从报告仪表盘带入：全部时间 / 五一售后服务专项 / 全国 / 全部主题", "project-only scope can enter AI QA");
 
   await clickPrimary(page, "报告仪表盘");
@@ -276,7 +305,12 @@ async function main() {
   await page.locator(".drilldown-results-panel").getByRole("button", { name: "打开原文池" }).click();
   await expectText(page, "分页加载原文", "raw feedback pool opens as paginated list");
   await expectText(page, "1-20 条", "raw feedback first page range visible");
-  const rawFeedbackCount = await page.locator(".drilldown-results-panel .evidence-card").count();
+  await page.locator(".drilldown-results-panel .evidence-page-size select").selectOption("10");
+  await expectText(page, "1-10 条", "raw feedback page size selector changes visible range");
+  let rawFeedbackCount = await page.locator(".drilldown-results-panel .evidence-card").count();
+  if (rawFeedbackCount !== 10) throw new Error(`raw feedback pool should render one page of 10 cards after page-size change, got ${rawFeedbackCount}`);
+  await page.locator(".drilldown-results-panel .evidence-page-size select").selectOption("20");
+  rawFeedbackCount = await page.locator(".drilldown-results-panel .evidence-card").count();
   if (rawFeedbackCount !== 20) throw new Error(`raw feedback pool should render exactly one page of 20 cards, got ${rawFeedbackCount}`);
   checks.push("raw feedback pool renders only current page");
   await page.locator(".drilldown-results-panel").getByRole("button", { name: "下一页" }).click();
@@ -350,12 +384,12 @@ async function main() {
   await filterPanel.getByRole("button", { name: /^杭州/ }).click();
   await filterPanel.getByRole("button", { name: /^西溪服务中心/ }).click();
   await expectText(page, "服务中心：西溪服务中心", "center selection reflected");
-  const incompleteWorkOrderDisabled = await page.locator(".drilldown-side").getByRole("button", { name: "生成服务中心工单" }).isDisabled();
+  const incompleteWorkOrderDisabled = await page.locator(".dashboard-action-bar").getByRole("button", { name: "生成服务工单" }).isDisabled();
   if (!incompleteWorkOrderDisabled) throw new Error("work order should wait until a concrete issue topic is selected");
   checks.push("work order generation waits for selected service center and issue topic");
   await clickSecondary(page, "问题主题");
   await page.locator(".filter-panel").getByRole("button", { name: /^等待时间/ }).click();
-  await page.getByRole("button", { name: "生成服务中心工单" }).click();
+  await page.locator(".dashboard-action-bar").getByRole("button", { name: "生成服务工单" }).click();
   const sideWorkOrder = page.locator(".drilldown-side .work-order-draft-panel");
   await sideWorkOrder.waitFor({ state: "visible", timeout: 4500 });
   if ((await page.locator(".drilldown-results-panel .work-order-draft-panel").count()) > 0) throw new Error("work order draft should not be buried in the result panel");
@@ -417,7 +451,7 @@ async function main() {
   await page.locator(".composer textarea").fill("等待时间主要影响哪些服务中心？");
   await page.getByRole("button", { name: "发送查询" }).click();
   await expectText(page, "数据查询结果", "qa answer appears after sending");
-  await expectText(page, "归档本次追问", "qa progress reaches archive stage");
+  await expectText(page, "保存记录", "qa progress reaches archive stage");
   await expectText(page, "等待时间影响服务中心", "qa conversation is auto named from first question");
   const evidenceCount = await page.locator(".answer-evidence-card").count();
   if (evidenceCount < 1) throw new Error(`qa answer should expose cited evidence after answering, got ${evidenceCount}`);
@@ -452,6 +486,7 @@ async function main() {
 
   await expectVisibleTertiaryPanelsScrollable(page, "visible tertiary panels expose vertical scroll");
   await expectNoLargeBlankArea(page, "no large blank panels after route changes");
+  await expectSmallRouteIconsVisible(page, "small route icons are visible");
 
   await browser.close();
   console.log(`UI audit passed: ${checks.length} checks`);
