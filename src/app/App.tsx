@@ -1483,11 +1483,18 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
   const [mappingSaved, setMappingSaved] = useState(false);
   const [activeReminder, setActiveReminder] = useState("推荐意愿缺失 64 条");
   const [confirmedReminders, setConfirmedReminders] = useState<string[]>([]);
-  const reminderItems = ["推荐意愿缺失 64 条", "服务评分缺失 22 条", "反馈原文字段预览"];
-  const pendingReminderCount = reminderItems.filter((item) => item !== "反馈原文字段预览" && !confirmedReminders.includes(item)).length;
+  const reminderItems = [
+    { id: "推荐意愿缺失 64 条", title: "推荐意愿缺失", count: "64 条", field: "nps_score", result: "不参与 NPS，保留原文和评分", required: true },
+    { id: "服务评分缺失 22 条", title: "服务评分缺失", count: "22 条", field: "service_score", result: "进入无评分样本，报告中单独标记", required: true },
+    { id: "反馈原文字段预览", title: "反馈原文字段预览", count: "已抽样", field: "feedback_text", result: "原文池可分页查看，不放入初始复盘正文", required: false },
+  ];
+  const pendingReminderCount = reminderItems.filter((item) => item.required && !confirmedReminders.includes(item.id)).length;
   const recommendationConfirmed = confirmedReminders.includes("推荐意愿缺失 64 条");
   const serviceScoreConfirmed = confirmedReminders.includes("服务评分缺失 22 条");
   const feedbackPreviewConfirmed = confirmedReminders.includes("反馈原文字段预览");
+  const activeReminderDetail = reminderItems.find((item) => item.id === activeReminder) ?? reminderItems[0];
+  const confirmedRequiredCount = reminderItems.filter((item) => item.required && confirmedReminders.includes(item.id)).length;
+  const requiredReminderCount = reminderItems.filter((item) => item.required).length;
   const mappingRows = [
     ["提交时间", "submit_time", "时间维度", "已通过"],
     ["项目名称", "project_name", "项目筛选", "已通过"],
@@ -1552,27 +1559,38 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
               <p>映射提醒</p>
               <h2>必须人工确认</h2>
             </div>
+            <StatusBadge tone={pendingReminderCount ? "warning" : "pass"}>{confirmedRequiredCount}/{requiredReminderCount}</StatusBadge>
+          </div>
+          <div className="confirmation-progress" aria-label="人工确认进度">
+            <span style={{ width: `${Math.round((confirmedRequiredCount / requiredReminderCount) * 100)}%` }} />
           </div>
           <div className="action-list">
             {reminderItems.map((item) => {
-              const confirmed = confirmedReminders.includes(item);
+              const confirmed = confirmedReminders.includes(item.id);
               return (
               <button
-                className={`${activeReminder === item ? "active" : ""} ${confirmed ? "confirmed" : ""}`.trim()}
-                key={item}
+                className={`${activeReminder === item.id ? "active" : ""} ${confirmed ? "confirmed" : ""}`.trim()}
+                key={item.id}
                 type="button"
                 onClick={() => {
-                  setActiveReminder(item);
-                  onAction(`已查看「${item}」`);
+                  setActiveReminder(item.id);
+                  onAction(`已查看「${item.id}」`);
                 }}
               >
-                <span>{item}</span>
-                <small>{confirmed ? "已确认" : item === "反馈原文字段预览" ? "预览" : "待确认"}</small>
+                <span>{item.title}</span>
+                <small>{confirmed ? "已确认" : item.required ? item.count : "预览"}</small>
               </button>
               );
             })}
           </div>
-          <PanelFooterNote title="当前查看" text={activeReminder} />
+          <div className="confirmation-detail-card">
+            <strong>{activeReminderDetail.title}</strong>
+            <dl>
+              <div><dt>字段</dt><dd>{activeReminderDetail.field}</dd></div>
+              <div><dt>数量</dt><dd>{activeReminderDetail.count}</dd></div>
+              <div><dt>处理</dt><dd>{activeReminderDetail.result}</dd></div>
+            </dl>
+          </div>
           <button className="primary-button confirm-reminder-button" type="button" onClick={confirmActiveReminder}>
             {confirmedReminders.includes(activeReminder) ? "已确认" : "确认当前项"}
           </button>
@@ -1584,13 +1602,17 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
 
 function ImportValidationPage({ onAction }: { onAction: (message: string) => void }) {
   const [lastRunAt, setLastRunAt] = useState("刚刚");
-  const validationSummary = [
-    ["行数完整性", "1,240 / 1,240", "全部行可读取", "已通过"],
-    ["时间解析", "1,240 / 1,240", "可用于日、周、月等周期", "已通过"],
-    ["推荐意愿", "1,176 / 1,240", "缺失样本不参与 NPS", "需确认"],
-    ["隐私字段", "手机号、姓名、VIN", "默认脱敏后进入系统", "已脱敏"],
-    ["重复反馈", "0 条", "未发现重复导入", "已通过"],
-  ];
+  const [rerunCount, setRerunCount] = useState(0);
+  const validationSummary = useMemo(() => {
+    const rerunSuffix = rerunCount ? `第 ${rerunCount + 1} 次校验` : "首次校验";
+    return [
+      ["行数完整性", "1,240 / 1,240", "全部行可读取", "已通过"],
+      ["时间解析", "1,240 / 1,240", "可用于日、周、月等周期", "已通过"],
+      ["推荐意愿", "1,176 / 1,240", rerunCount ? `${rerunSuffix}后仍需人工确认` : "缺失样本不参与 NPS", "需确认"],
+      ["隐私字段", "手机号、姓名、VIN", "默认脱敏后进入系统", "已脱敏"],
+      ["重复反馈", rerunCount ? "0 条 / 已复扫" : "0 条", "未发现重复导入", "已通过"],
+    ];
+  }, [rerunCount]);
 
   return (
     <div className="screen-grid import-page-layout" data-route-panel="new-validation">
@@ -1604,6 +1626,7 @@ function ImportValidationPage({ onAction }: { onAction: (message: string) => voi
             className="ghost-button"
             type="button"
             onClick={() => {
+              setRerunCount((value) => value + 1);
               setLastRunAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
               onAction("已重新运行导入校验");
             }}
@@ -1613,7 +1636,7 @@ function ImportValidationPage({ onAction }: { onAction: (message: string) => voi
         </div>
         <div className="route-summary-grid">
           <MiniKpi label="可读取行数" value="1,240" tone="pass" />
-          <MiniKpi label="重复反馈" value="0" tone="pass" />
+          <MiniKpi label="校验轮次" value={`${rerunCount + 1}`} tone="neutral" />
           <MiniKpi label="推荐缺失" value="64" tone="warning" />
           <MiniKpi label="隐私字段" value="已脱敏" tone="pass" />
         </div>
@@ -1728,6 +1751,7 @@ function ImportHistoryPage({
 }) {
   const [lastRefreshAt, setLastRefreshAt] = useState("未刷新");
   const [processingBatch, setProcessingBatch] = useState("未选择");
+  const [historyRows, setHistoryRows] = useState(importHistory);
   const pendingBatchName = "补能体验活动反馈.csv";
 
   return (
@@ -1742,7 +1766,11 @@ function ImportHistoryPage({
             className="ghost-button"
             type="button"
             onClick={() => {
-              setLastRefreshAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+              const refreshedAt = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+              setLastRefreshAt(refreshedAt);
+              setHistoryRows((rows) =>
+                rows.map((row) => row[0] === pendingBatchName ? [row[0], refreshedAt, "待配置", row[3]] : row),
+              );
               onAction("已刷新导入历史");
             }}
           >
@@ -1755,7 +1783,7 @@ function ImportHistoryPage({
           <MiniKpi label="已导入批次" value="2" tone="pass" />
           <MiniKpi label="需配置批次" value="1" tone="warning" />
         </div>
-        <DataTable columns={["文件", "导入时间", "状态", "行数"]} rows={importHistory} toneColumn={2} />
+        <DataTable columns={["文件", "导入时间", "状态", "行数"]} rows={historyRows} toneColumn={2} />
         <div className="route-action-bar">
           <div>
             <strong>同一项目允许多次补充导入</strong>
@@ -3311,11 +3339,9 @@ function AiQaScreen({
         </div>
       </section>
       <AiQaSidePanel
-        entryScope={entryScope}
         contextProject={activeContextProject}
         selectedThread={selectedThread}
         scopeSnapshot={activeScopeSnapshot}
-        activeSecondaryId={activeSecondaryId}
         answerSaved={answerSaved}
         evidenceExpanded={evidenceExpanded}
         evidenceQuotes={activeEvidenceQuotes}
@@ -3344,8 +3370,8 @@ function ReasoningMessage({
       <p>
         {reasoningContent ||
           (isRunning
-            ? "等待模型返回 reasoning_content。"
-            : "当前回答没有可展示的源头 reasoning_content。")}
+            ? "等待模型返回分析过程。"
+            : "当前回答未返回可展示的分析过程。")}
       </p>
     </div>
   );
@@ -3536,7 +3562,7 @@ function getProfileActionCards(activeSecondaryId: string, action: string, fallba
       "归档权限": [
         { title: "查看归档", text: "归档项目不进入默认范围。", status: "可查看", tone: "pass" },
         { title: "恢复归档", text: "可从归档项目页恢复。", status: "可操作", tone: "pass" },
-        { title: "删除项目", text: "当前原型不提供删除入口。", status: "不可用", tone: "neutral" },
+        { title: "删除项目", text: "仅管理员可处理删除申请。", status: "受限", tone: "neutral" },
       ],
     },
   };
@@ -3632,8 +3658,8 @@ function getProfileRouteConfig(activeSecondaryId: string) {
       sideEyebrow: "数据边界",
       sideTitle: "范围隔离",
       sideItems: [
-        { title: "AI 问答", text: "不反向修改仪表盘筛选" },
-        { title: "归档项目", text: "不进入默认范围" },
+        { title: "AI 问答", text: "按当前对话范围读取" },
+        { title: "归档项目", text: "从归档页单独查看" },
       ],
     };
   }
@@ -3808,6 +3834,12 @@ function DashboardActionBar({
         <small>按上方范围继续</small>
       </div>
       <div className="dashboard-action-buttons">
+        {showWorkOrderAction ? (
+          <button className="primary-button critical-action" type="button" disabled={!canCreateWorkOrder} onClick={onCreateWorkOrder}>
+            <Mail size={15} />
+            生成服务工单
+          </button>
+        ) : null}
         <button className="ghost-button" type="button" onClick={onToggleRawFeedback}>
           <FileSpreadsheet size={15} />
           {rawFeedbackOpen ? "收起原文池" : "打开原文池"}
@@ -3816,27 +3848,19 @@ function DashboardActionBar({
           <MoveRight size={15} />
           进入报告输出
         </button>
-        <button className="primary-button" type="button" onClick={onGoQa}>
+        <button className="ghost-button" type="button" onClick={onGoQa}>
           <MessageSquareText size={15} />
           AI 问答
         </button>
-        {showWorkOrderAction ? (
-          <button className="ghost-button strong-action" type="button" disabled={!canCreateWorkOrder} onClick={onCreateWorkOrder}>
-            <Mail size={15} />
-            生成服务工单
-          </button>
-        ) : null}
       </div>
     </div>
   );
 }
 
 function AiQaSidePanel({
-  entryScope,
   contextProject,
   selectedThread,
   scopeSnapshot,
-  activeSecondaryId,
   answerSaved,
   evidenceExpanded,
   evidenceQuotes,
@@ -3844,11 +3868,9 @@ function AiQaSidePanel({
   onSaveCurrentAnswer,
   onToggleEvidenceExpanded,
 }: {
-  entryScope: string;
   contextProject: (typeof qaProjects)[number] | null;
   selectedThread: QaThread | null;
   scopeSnapshot: QaScopeSnapshot;
-  activeSecondaryId: string;
   answerSaved: boolean;
   evidenceExpanded: boolean;
   evidenceQuotes: DomainEvidenceQuote[];
@@ -3866,19 +3888,6 @@ function AiQaSidePanel({
 
   return (
     <aside className="side-stack ai-qa-side">
-      <section className="panel qa-context-panel">
-        <div className="panel-head compact">
-          <div>
-            <p>本次对话设置</p>
-            <h2>{activeSecondaryId === "qa-history" ? "历史对话" : "新建问答"}</h2>
-          </div>
-        </div>
-        <div className="path-list">
-          <p><span>入口</span><strong>{entryScope}</strong></p>
-          <p><span>项目</span><strong>{contextProject ? contextProject.name : "不指定项目"}</strong></p>
-          <p><span>记录</span><strong>{selectedThread ? selectedThread.title : "新对话"}</strong></p>
-        </div>
-      </section>
       <section className="panel qa-answer-evidence-panel">
         <div className="panel-head compact">
           <div>
@@ -4762,7 +4771,7 @@ function buildRawFeedbackPage(
 
 function cellTone(value: string): StatusTone {
   if (["已识别", "已通过", "已脱敏", "已导入", "低"].includes(value)) return "pass";
-  if (["需确认", "需配置", "中"].includes(value)) return "warning";
+  if (["需确认", "需配置", "待配置", "中"].includes(value)) return "warning";
   if (["错误", "异常", "高"].includes(value)) return "risk";
   return "neutral";
 }

@@ -2202,10 +2202,16 @@ p {
   min-height: 42px;
 }
 
-.dashboard-action-buttons .strong-action {
-  border-color: rgba(0, 139, 139, 0.32);
-  color: var(--teal-dark);
-  background: #fff;
+.dashboard-action-buttons .critical-action {
+  min-width: 154px;
+  background: var(--red);
+  box-shadow: 0 8px 18px rgba(197, 48, 48, 0.16);
+}
+
+.dashboard-action-buttons .critical-action:disabled {
+  color: var(--muted);
+  background: #e5e7eb;
+  box-shadow: none;
 }
 
 .drilldown-layout > .drilldown-results-panel,
@@ -2426,6 +2432,67 @@ p {
 .action-list button.confirmed small {
   color: #087443;
   background: #fff;
+}
+
+.confirmation-progress {
+  height: 6px;
+  margin: 0 10px 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.confirmation-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--teal);
+  transition: width 180ms ease;
+}
+
+.confirmation-detail-card {
+  display: grid;
+  gap: 8px;
+  margin: 0 10px 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.confirmation-detail-card strong {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.confirmation-detail-card dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.confirmation-detail-card dl div {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.confirmation-detail-card dt,
+.confirmation-detail-card dd {
+  margin: 0;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.confirmation-detail-card dt {
+  color: var(--muted);
+}
+
+.confirmation-detail-card dd {
+  color: var(--ink);
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .confirm-reminder-button {

@@ -223,18 +223,26 @@ async function main() {
   await expectNoText(page, "拖拽文件到这里", "field mapping replaces upload page");
   await expectText(page, "2 项需确认", "mapping starts with two real confirmation items");
   await page.locator(".action-list").getByRole("button", { name: /推荐意愿缺失 64 条/ }).click();
+  await expectText(page, "nps_score", "manual confirmation shows selected field details");
+  await expectText(page, "不参与 NPS，保留原文和评分", "manual confirmation shows selected handling result");
   await page.getByRole("button", { name: "确认当前项" }).click();
   await expectText(page, "1 项需确认", "confirming recommendation issue updates pending count");
   await page.locator(".action-list").getByRole("button", { name: /服务评分缺失 22 条/ }).click();
   await page.getByRole("button", { name: "确认当前项" }).click();
+  await expectText(page, "2/2", "manual confirmation progress reaches complete state");
   await expectText(page, "可保存", "mapping can be saved after required confirmations");
   await page.getByRole("button", { name: "保存映射" }).click();
   await expectText(page, "映射已保存", "mapping save reflects confirmed reminders");
   await clickSecondary(page, "导入校验");
   await expectRoutePanel(page, "new-validation", "validation is full route");
   await expectNoRoutePanel(page, "new-mapping", "validation replaces mapping route");
+  await page.getByRole("button", { name: "重新校验" }).click();
+  await expectText(page, "第 2 次校验后仍需人工确认", "validation rerun updates validation table state");
+  await expectText(page, "0 条 / 已复扫", "validation rerun updates duplicate scan result");
   await clickSecondary(page, "导入历史");
   await expectRoutePanel(page, "new-history", "import history route");
+  await page.getByRole("button", { name: "刷新" }).click();
+  await expectText(page, "待配置", "import history refresh updates pending batch state");
   await page.getByRole("button", { name: "继续处理" }).click();
   await expectRoutePanel(page, "new-mapping", "history continue opens field mapping");
   await expectText(page, "已进入「补能体验活动反馈.csv」字段映射", "history continue provides batch context");
@@ -447,6 +455,9 @@ async function main() {
   await page.locator(".dashboard-action-bar").getByRole("button", { name: "生成服务工单" }).click();
   const sideWorkOrder = page.locator(".drilldown-side .work-order-draft-panel");
   await sideWorkOrder.waitFor({ state: "visible", timeout: 4500 });
+  const workOrderButtonClass = await page.locator(".dashboard-action-bar").getByRole("button", { name: "生成服务工单" }).getAttribute("class");
+  if (!workOrderButtonClass?.includes("critical-action")) throw new Error(`work order button should be the emphasized action, got ${workOrderButtonClass}`);
+  checks.push("work order action is visually prioritized after concrete scope");
   if ((await page.locator(".drilldown-results-panel .work-order-draft-panel").count()) > 0) throw new Error("work order draft should not be buried in the result panel");
   await expectText(page, "工单草稿预览", "work order draft can be created from dashboard risk scope");
   await sideWorkOrder.getByText("处理单位", { exact: false }).waitFor({ state: "visible", timeout: 4500 });
@@ -501,7 +512,8 @@ async function main() {
   await page.getByRole("button", { name: /五一售后服务专项/ }).first().click();
   await expectText(page, "自由新对话", "qa project can be deselected without leaving chat");
   await page.getByRole("button", { name: /杭州西溪服务中心低分原因/ }).first().click();
-  await expectText(page, "本对话范围：全部时间 / 全部项目 / 全国 / 全部主题", "qa history keeps its saved scope");
+  await page.locator(".chat-context-bar").getByText("全部时间 / 全部项目 / 全国 / 全部主题", { exact: false }).waitFor({ state: "visible", timeout: 4500 });
+  checks.push("qa history keeps its saved scope in the chat context bar");
   await page.locator(".chat-context-bar").getByRole("button", { name: "使用仪表盘范围" }).click();
   await expectText(page, "当前对话已使用仪表盘范围", "qa history can change its own scope to dashboard scope");
   await page.locator(".chat-context-bar").getByRole("button", { name: "自由范围" }).click();
@@ -514,6 +526,8 @@ async function main() {
   await page.getByRole("button", { name: "发送查询" }).click();
   await expectText(page, "数据查询结果", "qa answer appears after sending");
   await expectNoText(page, "调用状态", "qa removes source call status block from transcript");
+  await expectNoText(page, "reasoning_content", "qa does not expose source field names");
+  await expectNoText(page, "本次对话设置", "qa side panel removes duplicate conversation scope card");
   await expectText(page, "AI 思考过程", "qa exposes thinking between question and answer");
   const transcriptOrder = await page.locator(".chat-transcript").evaluate((element) => {
     const text = element.textContent || "";
@@ -565,7 +579,9 @@ async function main() {
   await expectRoutePanel(page, "profile-data", "profile data route");
   await expectText(page, "可访问项目", "profile data content visible");
   await page.getByRole("button", { name: "归档权限" }).click();
-  await expectText(page, "当前原型不提供删除入口", "profile data actions change main content");
+  await expectText(page, "仅管理员可处理删除申请", "profile data actions change main content");
+  await expectNoText(page, "当前原型", "profile does not expose prototype wording");
+  await expectNoText(page, "不反向修改", "profile does not expose internal state wording");
 
   await expectVisibleTertiaryPanelsScrollable(page, "visible tertiary panels expose vertical scroll");
   await expectNoLargeBlankArea(page, "no large blank panels after route changes");
