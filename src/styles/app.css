@@ -669,10 +669,18 @@ p {
 }
 
 .drilldown-layout {
-  grid-template-columns: minmax(680px, 1fr) 300px;
+  grid-template-columns: minmax(680px, 1fr);
   grid-template-rows: auto auto;
   align-items: stretch;
   position: relative;
+}
+
+.drilldown-layout.has-drilldown-side {
+  grid-template-columns: minmax(680px, 1fr) 300px;
+}
+
+.drilldown-layout.no-drilldown-side {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .filter-groups.parallel-filter-groups {
@@ -2385,8 +2393,45 @@ p {
 }
 
 .action-list button {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   color: var(--ink);
-  place-items: center start;
+  text-align: left;
+}
+
+.action-list button span,
+.action-list button small {
+  display: block;
+}
+
+.action-list button span {
+  min-width: 0;
+}
+
+.action-list button small {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #92400e;
+  background: var(--amber-soft);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 15px;
+}
+
+.action-list button.confirmed {
+  border-color: rgba(22, 163, 74, 0.3);
+  background: var(--green-soft);
+}
+
+.action-list button.confirmed small {
+  color: #087443;
+  background: #fff;
+}
+
+.confirm-reminder-button {
+  width: calc(100% - 20px);
+  margin: 0 10px 10px;
+  justify-content: center;
 }
 
 .evidence-panel {
@@ -3347,6 +3392,23 @@ p {
   gap: 12px;
 }
 
+.chat-context-main {
+  min-width: 0;
+}
+
+.chat-context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-context-actions .ghost-button {
+  min-height: 32px;
+  padding-inline: 10px;
+}
+
 .context-card strong,
 .context-card span,
 .chat-context-bar strong,
@@ -3408,6 +3470,12 @@ p {
 
 .qa-reference-bar button.active {
   box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.qa-reference-bar button:disabled,
+.chat-context-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.64;
 }
 
 .qa-reference-bar strong,
@@ -3635,34 +3703,22 @@ p {
   background: var(--amber-soft);
 }
 
-.query-progress {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
+.reasoning-message {
+  border-left: 4px solid var(--muted);
+  background: #fbfdff;
 }
 
-.query-progress span {
-  min-height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  color: var(--muted);
-  background: var(--surface-soft);
+.reasoning-message.active {
+  border-left-color: var(--teal);
+  background: #f3fbfa;
+}
+
+.reasoning-message p {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
   font-size: 13px;
-  font-weight: 800;
-}
-
-.query-progress span.done {
-  color: #087443;
-  background: var(--green-soft);
-}
-
-.query-progress-percent {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 16px;
-  text-align: right;
+  line-height: 20px;
 }
 
 .suggested-question-strip {

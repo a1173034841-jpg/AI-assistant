@@ -36,6 +36,8 @@ describe("deepseek agent port config", () => {
   it("streams model tokens and emits real processing stages while asking DeepSeek for an answer", async () => {
     const fetchMock = vi.fn(async () =>
       createSseResponse([
+        'data: {"choices":[{"delta":{"reasoning_content":"先核对当前范围。"}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_content":"再检查证据。"}}]}\n\n',
         'data: {"choices":[{"delta":{"content":"## 结论\\n"}}]}\n\n',
         'data: {"choices":[{"delta":{"content":"- 已基于当前报告"}}]}\n\n',
         'data: {"choices":[{"delta":{"content":"完成分析。"}}]}\n\n',
@@ -50,6 +52,7 @@ describe("deepseek agent port config", () => {
     });
     const stages: string[] = [];
     const streamedTexts: string[] = [];
+    const reasoningTexts: string[] = [];
 
     const answer = await port.answer({
       question: "当前报告最需要关注什么问题？",
@@ -59,13 +62,50 @@ describe("deepseek agent port config", () => {
       scopeLabel: "月 · 2026-05-01 至 2026-06-01 · 全部项目",
       onProgress: (stage) => stages.push(stage),
       onToken: (_delta, fullText) => streamedTexts.push(fullText),
+      onReasoningToken: (_delta, fullText) => reasoningTexts.push(fullText),
     });
 
     const requestBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
     expect(requestBody.stream).toBe(true);
     expect(answer.content).toBe("结论\n已基于当前报告完成分析。");
+    expect(answer.reasoningContent).toBe("先核对当前范围。再检查证据。");
     expect(streamedTexts.at(-1)).toBe("结论\n已基于当前报告完成分析。");
+    expect(reasoningTexts.at(-1)).toBe("先核对当前范围。再检查证据。");
     expect(stages).toEqual(["prepare-context", "check-scope", "retrieve-database", "requesting-model", "streaming-answer"]);
+  });
+
+  it("reads non-streaming reasoning content when the response body is JSON-only", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                reasoning_content: "先看服务中心，再核对低分证据。",
+                content: "最终结论：优先处理杭州西溪等待问题。",
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ));
+    const port = createDeepSeekAgentPort({
+      VITE_DEEPSEEK_API_KEY: "sk-test",
+      VITE_DEEPSEEK_BASE_URL: "https://api.deepseek.com",
+      VITE_DEEPSEEK_MODEL: "deepseek-reasoner",
+    });
+
+    const answer = await port.answer({
+      question: "当前报告最需要关注什么问题？",
+      records: [],
+      metrics: buildMetricSummary([]),
+      findings: [],
+      scopeLabel: "月 · 2026-05-01 至 2026-06-01 · 全部项目",
+    });
+
+    expect(answer.content).toBe("最终结论：优先处理杭州西溪等待问题。");
+    expect(answer.reasoningContent).toBe("先看服务中心，再核对低分证据。");
   });
 
   it("sends retrieved database chunk context to DeepSeek with the user question", async () => {

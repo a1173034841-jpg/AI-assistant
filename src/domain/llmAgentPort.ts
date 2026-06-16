@@ -12,6 +12,7 @@ export type WorkbenchAgentRequest = {
   retrievalScope?: SupabaseAgentRetrievalScope;
   onProgress?: (stage: AgentRunStage) => void;
   onToken?: (delta: string, fullText: string) => void;
+  onReasoningToken?: (delta: string, fullText: string) => void;
 };
 
 export type WorkbenchAgentPort = {

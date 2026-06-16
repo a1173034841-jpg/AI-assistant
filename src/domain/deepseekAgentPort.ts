@@ -21,6 +21,7 @@ type DeepSeekChatResponse = {
   choices?: Array<{
     message?: {
       content?: string;
+      reasoning_content?: string;
     };
   }>;
 };
@@ -29,11 +30,18 @@ type DeepSeekStreamChunk = {
   choices?: Array<{
     delta?: {
       content?: string;
+      reasoning_content?: string;
     };
     message?: {
       content?: string;
+      reasoning_content?: string;
     };
   }>;
+};
+
+type DeepSeekAnswerPayload = {
+  content: string;
+  reasoningContent: string;
 };
 
 type AgentRetrievalPort = {
@@ -102,13 +110,14 @@ export function createDeepSeekAgentPort(env: DeepSeekEnv, retrievalPort?: AgentR
           }
 
           request.onProgress?.("streaming-answer");
-          const streamedContent = await readDeepSeekAnswerStream(response, request.onToken);
-          const content = toNaturalLanguageAnswer(streamedContent);
+          const streamedAnswer = await readDeepSeekAnswerStream(response, request.onToken, request.onReasoningToken);
+          const content = toNaturalLanguageAnswer(streamedAnswer.content);
           if (!content) throw new Error("DeepSeek API returned an empty answer.");
 
           return {
             refused: false,
             content,
+            reasoningContent: toNaturalLanguageAnswer(streamedAnswer.reasoningContent),
             evidenceQuotes: localAnswer.evidenceQuotes,
           };
         } finally {
@@ -131,49 +140,60 @@ function normalizeTimeout(value?: string): number {
 async function readDeepSeekAnswerStream(
   response: Response,
   onToken?: WorkbenchAgentRequest["onToken"],
-): Promise<string> {
+  onReasoningToken?: WorkbenchAgentRequest["onReasoningToken"],
+): Promise<DeepSeekAnswerPayload> {
+  if (response.headers.get("Content-Type")?.includes("application/json")) return readFallbackJsonAnswer(response);
   if (!response.body) return readFallbackJsonAnswer(response);
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let fullText = "";
+  let fullReasoningText = "";
   let isDone = false;
 
   while (!isDone) {
     const { done, value } = await reader.read();
     if (value) {
       buffer += decoder.decode(value, { stream: !done });
-      const result = consumeSseBuffer(buffer, fullText, onToken);
+      const result = consumeSseBuffer(buffer, fullText, fullReasoningText, onToken, onReasoningToken);
       buffer = result.remainingBuffer;
       fullText = result.fullText;
+      fullReasoningText = result.fullReasoningText;
       isDone = result.isDone;
     }
     if (done) break;
   }
 
   if (buffer.trim() && !isDone) {
-    const result = consumeSseBuffer(`${buffer}\n\n`, fullText, onToken);
+    const result = consumeSseBuffer(`${buffer}\n\n`, fullText, fullReasoningText, onToken, onReasoningToken);
     fullText = result.fullText;
+    fullReasoningText = result.fullReasoningText;
   }
 
-  return fullText;
+  return { content: fullText, reasoningContent: fullReasoningText };
 }
 
-async function readFallbackJsonAnswer(response: Response): Promise<string> {
+async function readFallbackJsonAnswer(response: Response): Promise<DeepSeekAnswerPayload> {
   const data = (await response.json()) as DeepSeekChatResponse;
-  return data.choices?.[0]?.message?.content?.trim() ?? "";
+  return {
+    content: data.choices?.[0]?.message?.content?.trim() ?? "",
+    reasoningContent: data.choices?.[0]?.message?.reasoning_content?.trim() ?? "",
+  };
 }
 
 function consumeSseBuffer(
   buffer: string,
   fullText: string,
+  fullReasoningText: string,
   onToken?: WorkbenchAgentRequest["onToken"],
-): { fullText: string; remainingBuffer: string; isDone: boolean } {
+  onReasoningToken?: WorkbenchAgentRequest["onReasoningToken"],
+): { fullText: string; fullReasoningText: string; remainingBuffer: string; isDone: boolean } {
   const events = buffer.split(/\n\n/);
   const remainingBuffer = events.pop() ?? "";
   let isDone = false;
   let nextFullText = fullText;
+  let nextFullReasoningText = fullReasoningText;
 
   for (const event of events) {
     for (const line of event.split(/\r?\n/)) {
@@ -187,22 +207,30 @@ function consumeSseBuffer(
       }
 
       const delta = parseStreamDelta(payload);
-      if (!delta) continue;
-      nextFullText += delta;
-      onToken?.(delta, toNaturalLanguageAnswer(nextFullText));
+      if (delta.reasoningContent) {
+        nextFullReasoningText += delta.reasoningContent;
+        onReasoningToken?.(delta.reasoningContent, toNaturalLanguageAnswer(nextFullReasoningText));
+      }
+      if (delta.content) {
+        nextFullText += delta.content;
+        onToken?.(delta.content, toNaturalLanguageAnswer(nextFullText));
+      }
     }
     if (isDone) break;
   }
 
-  return { fullText: nextFullText, remainingBuffer, isDone };
+  return { fullText: nextFullText, fullReasoningText: nextFullReasoningText, remainingBuffer, isDone };
 }
 
-function parseStreamDelta(payload: string): string {
+function parseStreamDelta(payload: string): DeepSeekAnswerPayload {
   try {
     const data = JSON.parse(payload) as DeepSeekStreamChunk;
-    return data.choices?.map((choice) => choice.delta?.content ?? choice.message?.content ?? "").join("") ?? "";
+    return {
+      content: data.choices?.map((choice) => choice.delta?.content ?? choice.message?.content ?? "").join("") ?? "",
+      reasoningContent: data.choices?.map((choice) => choice.delta?.reasoning_content ?? choice.message?.reasoning_content ?? "").join("") ?? "",
+    };
   } catch {
-    return "";
+    return { content: "", reasoningContent: "" };
   }
 }
 

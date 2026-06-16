@@ -188,6 +188,14 @@ async function main() {
   await expectSecondaryOpen(page, "secondary nav opens after primary click");
   await expectRoutePanel(page, "new-upload", "new upload route");
   await expectNoText(page, "上传反馈表、确认字段映射与数据质量", "third-level heading subtitle removed");
+  await expectText(page, "尚未选择文件", "upload starts without a fake selected file");
+  await expectText(page, "当前文件", "upload status still exposes file state");
+  await expectText(page, "未选择", "upload validation status starts empty");
+  const fakeInitialFileCount = await page.locator(".upload-panel, .import-status-panel .import-status-list").getByText("五一售后服务专项_2026-05.csv", { exact: false }).count();
+  if (fakeInitialFileCount > 0) throw new Error("upload current state should not show a sample file before user upload");
+  await page.locator(".import-status-panel .import-status-list").getByText("未开始", { exact: false }).waitFor({ state: "visible", timeout: 4500 });
+  await page.locator(".import-status-panel .import-status-list").getByText("待识别", { exact: false }).waitFor({ state: "visible", timeout: 4500 });
+  checks.push("upload page does not prefill sample current file data");
   const templateDownloadPromise = page.waitForEvent("download");
   await page.getByRole("link", { name: "下载标准模板" }).click();
   const templateDownload = await templateDownloadPromise;
@@ -198,6 +206,15 @@ async function main() {
   await clickSecondary(page, "字段映射");
   await expectRoutePanel(page, "new-mapping", "field mapping is full route");
   await expectNoText(page, "拖拽文件到这里", "field mapping replaces upload page");
+  await expectText(page, "2 项需确认", "mapping starts with two real confirmation items");
+  await page.locator(".action-list").getByRole("button", { name: /推荐意愿缺失 64 条/ }).click();
+  await page.getByRole("button", { name: "确认当前项" }).click();
+  await expectText(page, "1 项需确认", "confirming recommendation issue updates pending count");
+  await page.locator(".action-list").getByRole("button", { name: /服务评分缺失 22 条/ }).click();
+  await page.getByRole("button", { name: "确认当前项" }).click();
+  await expectText(page, "可保存", "mapping can be saved after required confirmations");
+  await page.getByRole("button", { name: "保存映射" }).click();
+  await expectText(page, "映射已保存", "mapping save reflects confirmed reminders");
   await clickSecondary(page, "导入校验");
   await expectRoutePanel(page, "new-validation", "validation is full route");
   await expectNoRoutePanel(page, "new-mapping", "validation replaces mapping route");
@@ -243,7 +260,19 @@ async function main() {
   const overviewFilterGroups = await overviewFilterPanel.locator(".parallel-filter-groups, .multi-filter-group, .filter-group").count();
   if (overviewFilterGroups !== 0) throw new Error(`dashboard overview should not duplicate scope filters, got ${overviewFilterGroups}`);
   await overviewFilterPanel.locator(".current-scope-card").waitFor({ state: "visible", timeout: 4500 });
+  const duplicatedSideScope = await page.locator(".drilldown-side .drilldown-path-panel").count();
+  if (duplicatedSideScope > 0) throw new Error("dashboard should not repeat current scope in the right side panel");
+  const actionBarScopeLabels = await page.locator(".dashboard-action-bar").getByText("当前筛选范围", { exact: false }).count();
+  if (actionBarScopeLabels > 0) throw new Error("dashboard action bar should not repeat current scope text");
+  const overviewRightGap = await page.locator(".drilldown-layout").evaluate((layout) => {
+    const layoutRect = layout.getBoundingClientRect();
+    const resultPanel = layout.querySelector(".drilldown-results-panel")?.getBoundingClientRect();
+    if (!resultPanel) return 0;
+    return Math.max(0, layoutRect.right - resultPanel.right);
+  });
+  if (overviewRightGap > 28) throw new Error(`dashboard result panel leaves a right blank gap: ${overviewRightGap}`);
   checks.push("dashboard overview does not duplicate scope filter controls");
+  checks.push("dashboard overview removes duplicated side scope and fills width");
   await clickSecondary(page, "筛选范围");
   await expectRoutePanel(page, "dashboard-scope", "scope filter route");
   await expectText(page, "筛选范围", "dashboard scope filter page is visible");
@@ -268,7 +297,7 @@ async function main() {
   await clickPrimary(page, "报告仪表盘");
   await expectText(page, "全部时间 / 五一售后服务专项 / 全国 / 全部主题", "dashboard keeps applied project filter after returning from report");
   await page.locator(".dashboard-action-bar").getByRole("button", { name: "AI 问答" }).click();
-  await expectText(page, "从报告仪表盘带入：全部时间 / 五一售后服务专项 / 全国 / 全部主题", "project-only scope can enter AI QA");
+  await expectText(page, "本对话使用仪表盘范围：全部时间 / 五一售后服务专项 / 全国 / 全部主题", "project-only scope can enter AI QA");
 
   await clickPrimary(page, "报告仪表盘");
   await clickSecondary(page, "筛选范围");
@@ -437,21 +466,43 @@ async function main() {
   const expandBeforeAnswerDisabled = await page.getByRole("button", { name: "展开引用证据" }).isDisabled();
   if (!expandBeforeAnswerDisabled) throw new Error("qa evidence expand should be disabled before an answer exists");
   checks.push("qa evidence does not show fake citations before answering");
-  await page.getByRole("button", { name: "使用仪表盘范围" }).click();
+  await page.locator(".chat-context-bar").getByRole("button", { name: "使用仪表盘范围" }).click();
   await expectText(page, "带入仪表盘范围", "qa scope can be applied");
-  await page.getByRole("button", { name: "取消仪表盘范围" }).click();
-  await expectText(page, "自由新对话", "qa scope can be deselected");
+  await page.locator(".chat-context-bar").getByRole("button", { name: "自由范围" }).click();
+  await expectText(page, "自由范围", "qa scope can be deselected");
   await page.getByRole("button", { name: /五一售后服务专项/ }).first().click();
   await expectText(page, "参考项目：五一售后服务专项", "qa project can be selected");
   await page.getByRole("button", { name: /五一售后服务专项/ }).first().click();
   await expectText(page, "自由新对话", "qa project can be deselected without leaving chat");
   await page.getByRole("button", { name: /杭州西溪服务中心低分原因/ }).first().click();
+  await expectText(page, "本对话范围：全部时间 / 全部项目 / 全国 / 全部主题", "qa history keeps its saved scope");
+  await page.locator(".chat-context-bar").getByRole("button", { name: "使用仪表盘范围" }).click();
+  await expectText(page, "当前对话已使用仪表盘范围", "qa history can change its own scope to dashboard scope");
+  await page.locator(".chat-context-bar").getByRole("button", { name: "自由范围" }).click();
+  await expectText(page, "当前对话已改为自由范围", "qa history can change its own scope back to free scope");
+  await page.getByRole("button", { name: /杭州西溪服务中心低分原因/ }).first().click();
   await expectText(page, "新对话", "qa history record can be deselected");
+  await page.locator(".qa-record-selector").getByRole("button", { name: /^新对话/ }).click();
   await page.getByRole("button", { name: "新建对话" }).click();
   await page.locator(".composer textarea").fill("等待时间主要影响哪些服务中心？");
   await page.getByRole("button", { name: "发送查询" }).click();
   await expectText(page, "数据查询结果", "qa answer appears after sending");
-  await expectText(page, "保存记录", "qa progress reaches archive stage");
+  await expectNoText(page, "调用状态", "qa removes source call status block from transcript");
+  await expectText(page, "AI 思考过程", "qa exposes thinking between question and answer");
+  const transcriptOrder = await page.locator(".chat-transcript").evaluate((element) => {
+    const text = element.textContent || "";
+    return {
+      question: text.indexOf("你的问题"),
+      reasoning: text.indexOf("AI 思考过程"),
+      answer: text.indexOf("数据查询结果"),
+      hasSyntheticProgress: text.includes("整理范围") || text.includes("检查边界") || text.includes("检索证据"),
+    };
+  });
+  if (!(transcriptOrder.question >= 0 && transcriptOrder.reasoning > transcriptOrder.question && transcriptOrder.answer > transcriptOrder.reasoning)) {
+    throw new Error(`qa thinking order should be question -> thinking -> answer, got ${JSON.stringify(transcriptOrder)}`);
+  }
+  if (transcriptOrder.hasSyntheticProgress) throw new Error("qa thinking should not show synthetic progress labels");
+  checks.push("qa thinking appears between question and answer");
   await expectText(page, "等待时间影响服务中心", "qa conversation is auto named from first question");
   const evidenceCount = await page.locator(".answer-evidence-card").count();
   if (evidenceCount < 1) throw new Error(`qa answer should expose cited evidence after answering, got ${evidenceCount}`);

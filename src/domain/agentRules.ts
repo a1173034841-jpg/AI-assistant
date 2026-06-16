@@ -12,6 +12,7 @@ export type WorkbenchAgentInput = {
 export type WorkbenchAgentAnswer = {
   refused: boolean;
   content: string;
+  reasoningContent?: string;
   evidenceQuotes: EvidenceQuote[];
 };
 

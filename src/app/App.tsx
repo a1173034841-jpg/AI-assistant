@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import {
   AlertTriangle,
@@ -26,9 +26,7 @@ import {
 } from "lucide-react";
 import { getAppViewMode } from "./viewMode";
 import {
-  buildAgentProgressSteps,
   buildAutoConversationTitle,
-  getAgentProgressPercent,
   removeQaConversationRecord,
   type AgentRunStage,
 } from "../domain/agentConversation";
@@ -109,12 +107,21 @@ type QaThread = {
   meta: string;
   turns?: QaMessage[];
   evidenceQuotes?: DomainEvidenceQuote[];
+  scopeSnapshot?: QaScopeSnapshot;
+  reasoningContent?: string;
 };
 
 type QaMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+};
+
+type QaScopeSnapshot = {
+  mode: QaScopeMode;
+  filter: DrilldownFilter;
+  contextProjectId: string | null;
+  label: string;
 };
 
 type PrimaryNavItem = {
@@ -1363,8 +1370,9 @@ function SecondaryWorkspace({ secondaryId }: { secondaryId: string }) {
 
 function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: string; onAction: (message: string) => void }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [selectedFileName, setSelectedFileName] = useState("五一售后服务专项_2026-05.csv");
+  const [selectedFileName, setSelectedFileName] = useState("");
   const [recognitionStatus, setRecognitionStatus] = useState("待复核");
+  const hasSelectedFile = selectedFileName.length > 0;
 
   if (activeSecondaryId === "new-mapping") return <ImportMappingPage onAction={onAction} />;
   if (activeSecondaryId === "new-validation") return <ImportValidationPage onAction={onAction} />;
@@ -1383,6 +1391,10 @@ function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: stri
   };
   const markTemplateDownload = () => onAction("已下载标准导入模板");
   const rerunRecognition = () => {
+    if (!hasSelectedFile) {
+      onAction("请先上传反馈数据文件");
+      return;
+    }
     setRecognitionStatus("已重新识别");
     onAction("已重新识别字段映射，推荐意愿字段仍需确认");
   };
@@ -1395,7 +1407,7 @@ function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: stri
             <p>{secondaryPanelCopy[activeSecondaryId]?.title ?? "数据进入"}</p>
             <h2>{activeSecondaryId === "new-mapping" ? "确认字段映射关系" : activeSecondaryId === "new-validation" ? "字段映射与数据质量" : activeSecondaryId === "new-report" ? "生成初始复盘报告" : activeSecondaryId === "new-history" ? "导入批次与历史记录" : "上传售后反馈 Excel / CSV"}</h2>
           </div>
-          <StatusBadge tone="pass">校验中</StatusBadge>
+          <StatusBadge tone={hasSelectedFile ? "pass" : "neutral"}>{hasSelectedFile ? "已选择文件" : "待上传"}</StatusBadge>
         </div>
         <div className="upload-zone">
           <input
@@ -1409,7 +1421,7 @@ function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: stri
           <UploadCloud size={36} />
           <strong>拖拽文件到这里，或点击上传</strong>
           <span>支持问卷星、腾讯问卷、App 内问卷、短信和企微链接导出的标准表格</span>
-          <em>当前文件：{selectedFileName}</em>
+          <em>{hasSelectedFile ? `当前文件：${selectedFileName}` : "尚未选择文件"}</em>
           <div className="button-row">
             <button className="primary-button" type="button" onClick={openUploadPicker}>
               <UploadCloud size={15} />
@@ -1427,10 +1439,10 @@ function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: stri
           </div>
         </div>
         <div className="compact-kpis">
-          <MiniKpi label="识别项目" value="1" tone="pass" />
-          <MiniKpi label="字段覆盖" value="94.8%" tone="pass" />
-          <MiniKpi label="需确认" value="2 项" tone="warning" />
-          <MiniKpi label="隐私字段" value="已脱敏" tone="pass" />
+          <MiniKpi label="识别项目" value={hasSelectedFile ? "1" : "-"} tone={hasSelectedFile ? "pass" : "neutral"} />
+          <MiniKpi label="字段覆盖" value={hasSelectedFile ? "94.8%" : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
+          <MiniKpi label="需确认" value={hasSelectedFile ? "2 项" : "-"} tone={hasSelectedFile ? "warning" : "neutral"} />
+          <MiniKpi label="隐私字段" value={hasSelectedFile ? "已脱敏" : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
         </div>
       </section>
       <section className="panel validation-panel">
@@ -1443,18 +1455,25 @@ function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: stri
         </div>
         <div className="route-summary-grid">
           <MiniKpi label="识别状态" value={recognitionStatus} tone={recognitionStatus === "已重新识别" ? "pass" : "warning"} />
-          <MiniKpi label="当前文件" value={selectedFileName.endsWith(".csv") ? "CSV" : "Excel"} tone="neutral" />
-          <MiniKpi label="字段覆盖" value="94.8%" tone="pass" />
-          <MiniKpi label="需确认" value="2 项" tone="warning" />
+          <MiniKpi label="当前文件" value={hasSelectedFile ? (selectedFileName.endsWith(".csv") ? "CSV" : "Excel") : "未选择"} tone="neutral" />
+          <MiniKpi label="字段覆盖" value={hasSelectedFile ? "94.8%" : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
+          <MiniKpi label="需确认" value={hasSelectedFile ? "2 项" : "-"} tone={hasSelectedFile ? "warning" : "neutral"} />
         </div>
-        <DataTable
-          columns={["字段", "状态", "结果", "说明"]}
-          rows={validationRows}
-          toneColumn={1}
-        />
+        {hasSelectedFile ? (
+          <DataTable
+            columns={["字段", "状态", "结果", "说明"]}
+            rows={validationRows}
+            toneColumn={1}
+          />
+        ) : (
+          <div className="empty-state-panel">
+            <strong>上传文件后开始识别</strong>
+            <span>当前没有待校验的数据。</span>
+          </div>
+        )}
       </section>
       <div className="side-stack">
-        <ImportStatusPanel />
+        <ImportStatusPanel hasSelectedFile={hasSelectedFile} />
       </div>
     </div>
   );
@@ -1463,16 +1482,31 @@ function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: stri
 function ImportMappingPage({ onAction }: { onAction: (message: string) => void }) {
   const [mappingSaved, setMappingSaved] = useState(false);
   const [activeReminder, setActiveReminder] = useState("推荐意愿缺失 64 条");
+  const [confirmedReminders, setConfirmedReminders] = useState<string[]>([]);
+  const reminderItems = ["推荐意愿缺失 64 条", "服务评分缺失 22 条", "反馈原文字段预览"];
+  const pendingReminderCount = reminderItems.filter((item) => item !== "反馈原文字段预览" && !confirmedReminders.includes(item)).length;
+  const recommendationConfirmed = confirmedReminders.includes("推荐意愿缺失 64 条");
+  const serviceScoreConfirmed = confirmedReminders.includes("服务评分缺失 22 条");
+  const feedbackPreviewConfirmed = confirmedReminders.includes("反馈原文字段预览");
   const mappingRows = [
     ["提交时间", "submit_time", "时间维度", "已通过"],
     ["项目名称", "project_name", "项目筛选", "已通过"],
     ["区域", "region", "区域筛选", "已通过"],
     ["城市", "city", "城市筛选", "已通过"],
     ["服务中心", "service_center", "服务中心筛选", "已通过"],
-    ["车主原话", "feedback_text", "反馈原文", "已通过"],
-    ["服务评分", "service_score", "评分指标", "已通过"],
-    ["推荐意愿", "nps_score", "NPS 指标", "需确认"],
+    ["车主原话", "feedback_text", "反馈原文", feedbackPreviewConfirmed ? "已确认" : "已通过"],
+    ["服务评分", "service_score", "评分指标", serviceScoreConfirmed ? "已确认" : "需确认"],
+    ["推荐意愿", "nps_score", "NPS 指标", recommendationConfirmed ? "已确认" : "需确认"],
   ];
+  const confirmActiveReminder = () => {
+    if (confirmedReminders.includes(activeReminder)) {
+      onAction(`「${activeReminder}」已确认`);
+      return;
+    }
+    setConfirmedReminders((current) => [...current, activeReminder]);
+    setMappingSaved(false);
+    onAction(`已确认「${activeReminder}」`);
+  };
 
   return (
     <div className="screen-grid import-page-layout" data-route-panel="new-mapping">
@@ -1482,12 +1516,14 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
             <p>字段映射</p>
             <h2>确认导入字段和系统口径</h2>
           </div>
-          <StatusBadge tone={mappingSaved ? "pass" : "warning"}>{mappingSaved ? "映射已保存" : "2 项需确认"}</StatusBadge>
+          <StatusBadge tone={mappingSaved ? "pass" : pendingReminderCount ? "warning" : "pass"}>
+            {mappingSaved ? "映射已保存" : pendingReminderCount ? `${pendingReminderCount} 项需确认` : "可保存"}
+          </StatusBadge>
         </div>
         <div className="route-summary-grid">
           <MiniKpi label="必填字段" value="8" tone="pass" />
           <MiniKpi label="自动匹配" value="94.8%" tone="pass" />
-          <MiniKpi label="需确认" value="2" tone="warning" />
+          <MiniKpi label="需确认" value={`${pendingReminderCount}`} tone={pendingReminderCount ? "warning" : "pass"} />
           <MiniKpi label="反馈原文" value="已保留" tone="pass" />
         </div>
         <DataTable columns={["业务字段", "表格字段", "用于哪个功能", "状态"]} rows={mappingRows} toneColumn={3} />
@@ -1503,8 +1539,9 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
               setMappingSaved(true);
               onAction("字段映射已保存，可进入导入校验");
             }}
+            disabled={pendingReminderCount > 0}
           >
-            {mappingSaved ? "已保存映射" : "保存映射"}
+            {mappingSaved ? "已保存映射" : pendingReminderCount ? "先确认字段" : "保存映射"}
           </button>
         </div>
       </section>
@@ -1517,21 +1554,28 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
             </div>
           </div>
           <div className="action-list">
-            {["推荐意愿缺失 64 条", "服务评分缺失 22 条", "反馈原文字段预览"].map((item) => (
+            {reminderItems.map((item) => {
+              const confirmed = confirmedReminders.includes(item);
+              return (
               <button
-                className={activeReminder === item ? "active" : ""}
+                className={`${activeReminder === item ? "active" : ""} ${confirmed ? "confirmed" : ""}`.trim()}
                 key={item}
                 type="button"
                 onClick={() => {
                   setActiveReminder(item);
-                  onAction(`已查看${item}`);
+                  onAction(`已查看「${item}」`);
                 }}
               >
-                {item}
+                <span>{item}</span>
+                <small>{confirmed ? "已确认" : item === "反馈原文字段预览" ? "预览" : "待确认"}</small>
               </button>
-            ))}
+              );
+            })}
           </div>
           <PanelFooterNote title="当前查看" text={activeReminder} />
+          <button className="primary-button confirm-reminder-button" type="button" onClick={confirmActiveReminder}>
+            {confirmedReminders.includes(activeReminder) ? "已确认" : "确认当前项"}
+          </button>
         </section>
       </aside>
     </div>
@@ -2074,32 +2118,36 @@ function getDashboardRouteConfig(activeSecondaryId: string): {
   title: string;
   subtitle: string;
   resultTitle: string;
+  resultHeading: string;
   resultText: string;
 } {
   if (activeSecondaryId === "dashboard-scope") {
     return {
       className: "dashboard-scope-route",
       title: "筛选范围",
-      subtitle: "时间、项目、区域同级筛选；唯一层级是区域 > 城市 > 服务中心",
+      subtitle: "时间、项目、区域同级筛选",
       resultTitle: "筛选范围结果",
-      resultText: "报告、AI 问答、原文池和工单共用当前范围",
+      resultHeading: "指标与服务中心",
+      resultText: "下游操作使用本页范围",
     };
   }
   if (activeSecondaryId === "dashboard-topic") {
     return {
       className: "dashboard-topic-route",
       title: "问题主题",
-      subtitle: "只调整问题主题，沿用当前时间、项目和区域范围",
+      subtitle: "按主题定位问题样本",
       resultTitle: "主题风险结果",
-      resultText: "主题命中结果",
+      resultHeading: "主题命中服务中心",
+      resultText: "表格随主题选择更新",
     };
   }
   return {
     className: "dashboard-overview-route",
     title: "总览",
-    subtitle: "当前时间、项目、区域和主题范围",
+    subtitle: "核心指标、风险对象和处理入口",
     resultTitle: "总览结果",
-    resultText: "当前范围的指标和风险对象",
+    resultHeading: "指标与风险对象",
+    resultText: "未筛选时展示全部数据",
   };
 }
 
@@ -2139,6 +2187,7 @@ function DrilldownScreen({
   const availableCities = getCitiesByRegions(filterState.selectedRegions);
   const availableCenters = getCentersByCities(filterState.selectedRegions, filterState.selectedCities);
   const dashboardRoute = getDashboardRouteConfig(activeSecondaryId);
+  const showInlineScopeSummary = activeSecondaryId !== "dashboard-overview";
   const hasSelectedDashboardData = filterState.selectedRegions.length > 0
     || filterState.selectedCities.length > 0
     || filterState.selectedCenters.length > 0
@@ -2464,7 +2513,7 @@ function DrilldownScreen({
 
   return (
     <div
-      className={`screen-grid drilldown-layout ${dashboardRoute.className}`}
+      className={`screen-grid drilldown-layout ${workOrderDraft ? "has-drilldown-side" : "no-drilldown-side"} ${dashboardRoute.className}`}
       data-route-panel={activeSecondaryId}
       onMouseUp={captureSelectionForQa}
     >
@@ -2478,7 +2527,7 @@ function DrilldownScreen({
         </div>
         <div className="route-intro">
           <strong>{dashboardRoute.subtitle}</strong>
-          <span>{buildDrilldownScope(filterState)}</span>
+          {showInlineScopeSummary ? <span>{buildDrilldownScope(filterState)}</span> : null}
         </div>
         {renderScopePanelContent()}
       </section>
@@ -2486,14 +2535,13 @@ function DrilldownScreen({
         <div className="panel-head">
           <div>
             <p>{dashboardRoute.resultTitle}</p>
-            <h2>{buildDrilldownScope(filterState)}</h2>
+            <h2>{dashboardRoute.resultHeading}</h2>
             <span>{dashboardRoute.resultText}</span>
           </div>
           <StatusBadge tone={riskRows.length ? "warning" : "pass"}>{riskRows.length} 个风险对象</StatusBadge>
         </div>
         {renderResultContent()}
         <DashboardActionBar
-          filterState={filterState}
           filteredRows={filteredRows}
           rawFeedbackOpen={rawFeedbackOpen}
           canCreateWorkOrder={filterState.selectedCenters.length > 0 && filterState.selectedTopics.length > 0}
@@ -2507,13 +2555,11 @@ function DrilldownScreen({
           <EvidenceList compact filterState={filterState} filteredRows={filteredRows} />
         ) : null}
       </section>
-      <DrilldownSidePanel
-        filterState={filterState}
-        filteredRows={filteredRows}
-        riskRows={riskRows}
-        workOrderDraft={workOrderDraft}
-        onAction={onAction}
-      />
+      {workOrderDraft ? (
+        <aside className="side-stack drilldown-side">
+          <WorkOrderDraftCard draft={workOrderDraft} onAction={onAction} />
+        </aside>
+      ) : null}
       {selectionAi ? (
         <button
           className="selection-ai-popover"
@@ -2708,6 +2754,10 @@ function AiQaScreen({
     () => (initialQuestion ? [{ id: "dashboard-user", role: "user", text: initialQuestion }] : []),
     [initialQuestion],
   );
+  const initialScopeSnapshot = useMemo(
+    () => buildQaScopeSnapshot(initialScopeMode, appliedFilter, null),
+    [initialScopeMode, appliedFilter],
+  );
   const draftConversationIdRef = useRef<string | null>(initialQuestion ? "dashboard-new" : null);
   const handledInitialQuestionRef = useRef("");
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -2722,6 +2772,7 @@ function AiQaScreen({
         title: buildAutoConversationTitle(initialQuestion),
         meta: "1 轮问答 / 来自仪表盘范围",
         turns: initialMessages,
+        scopeSnapshot: initialScopeSnapshot,
       },
       ...queryThreads,
     ];
@@ -2734,6 +2785,7 @@ function AiQaScreen({
   const [agentProgressStage, setAgentProgressStage] = useState<AgentRunStage | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [streamingAnswer, setStreamingAnswer] = useState("");
+  const [sourceReasoningContent, setSourceReasoningContent] = useState("");
   const selectedThreadForView = selectedThreadId
     ? conversationThreads.find((thread) => thread.id === selectedThreadId) ?? null
     : null;
@@ -2741,28 +2793,33 @@ function AiQaScreen({
   const selectedThread = selectedThreadId
     ? selectedThreadForView
     : null;
-  const contextProject = contextProjectId
-    ? qaProjects.find((project) => project.id === contextProjectId) ?? null
-    : null;
-  const entryScope = scopeMode === "filtered"
-    ? `从报告仪表盘带入：${buildDrilldownScope(appliedFilter)}`
-    : "自由新对话";
-  const contextLabel = contextProject
-    ? `参考项目：${contextProject.name}`
+  const activeScopeSnapshot = useMemo(
+    () => selectedThreadForView
+      ? selectedThreadForView.scopeSnapshot ?? buildQaScopeSnapshot("free", defaultDrilldownFilter, null)
+      : buildQaScopeSnapshot(scopeMode, appliedFilter, contextProjectId),
+    [selectedThreadForView, scopeMode, appliedFilter, contextProjectId],
+  );
+  const activeContextProject = getQaProjectById(activeScopeSnapshot.contextProjectId);
+  const entryScope = selectedThreadForView
+    ? `本对话范围：${activeScopeSnapshot.label}`
+    : activeScopeSnapshot.mode === "filtered"
+      ? `本对话使用仪表盘范围：${activeScopeSnapshot.label}`
+      : "自由新对话";
+  const contextLabel = activeContextProject
+    ? `参考项目：${activeContextProject.name}`
       : selectedThreadForView
       ? selectedThreadForView.title
       : entryScope;
-  const agentProgressSteps = agentProgressStage ? buildAgentProgressSteps(agentProgressStage) : [];
-  const progressPercent = agentProgressStage ? getAgentProgressPercent(agentProgressStage) : 0;
-  const records = useMemo(() => buildQaAgentRecords(appliedFilter, contextProject), [appliedFilter, contextProject]);
-  const metrics = useMemo(() => buildMetricSummary(records), [records]);
-  const findings = useMemo(() => buildFindingsForScenario(records, "服务问题闭环"), [records]);
+  const activeRecords = useMemo(() => buildQaAgentRecords(activeScopeSnapshot.filter, activeContextProject), [activeScopeSnapshot, activeContextProject]);
+  const activeMetrics = useMemo(() => buildMetricSummary(activeRecords), [activeRecords]);
+  const activeFindings = useMemo(() => buildFindingsForScenario(activeRecords, "服务问题闭环"), [activeRecords]);
   const suggestedQuestions = useMemo(
-    () => buildSuggestedAgentQuestions({ records, metrics, findings, scopeLabel: buildQaAgentScopeLabel(appliedFilter, contextProject) }),
-    [records, metrics, findings, appliedFilter, contextProject],
+    () => buildSuggestedAgentQuestions({ records: activeRecords, metrics: activeMetrics, findings: activeFindings, scopeLabel: activeScopeSnapshot.label }),
+    [activeRecords, activeMetrics, activeFindings, activeScopeSnapshot],
   );
+  const lastUserMessageIndex = activeMessages.map((message) => message.role).lastIndexOf("user");
 
-  const runQuestion = async (text: string) => {
+  const runQuestion = async (text: string, scopeOverride?: QaScopeSnapshot) => {
     const trimmed = text.trim();
     if (!trimmed) {
       onAction("请输入要查询的问题");
@@ -2779,8 +2836,16 @@ function AiQaScreen({
       text: trimmed,
     };
     const pendingTurns = [...previousTurns, userMessage];
-    const scopeLabel = buildQaAgentScopeLabel(appliedFilter, contextProject);
+    const questionScope = scopeOverride
+      ?? selectedThreadForView?.scopeSnapshot
+      ?? activeScopeSnapshot;
+    const questionContextProject = getQaProjectById(questionScope.contextProjectId);
+    const questionRecords = buildQaAgentRecords(questionScope.filter, questionContextProject);
+    const questionMetrics = buildMetricSummary(questionRecords);
+    const questionFindings = buildFindingsForScenario(questionRecords, "服务问题闭环");
+    const scopeLabel = questionScope.label;
     let latestStreamText = "";
+    let latestReasoningText = "";
 
     setActiveMessages(pendingTurns);
     setSelectedThreadId(nextThreadId);
@@ -2788,6 +2853,7 @@ function AiQaScreen({
     setEvidenceExpanded(false);
     setQuestion("");
     setStreamingAnswer("");
+    setSourceReasoningContent("");
     setActiveEvidenceQuotes([]);
     setAgentProgressStage("prepare-context");
     setIsRunning(true);
@@ -2798,6 +2864,7 @@ function AiQaScreen({
         meta: "查询中",
         turns: pendingTurns,
         evidenceQuotes: [],
+        scopeSnapshot: questionScope,
       };
       const withoutCurrent = current.filter((thread) => thread.id !== nextThreadId);
       return [pendingThread, ...withoutCurrent];
@@ -2806,18 +2873,23 @@ function AiQaScreen({
     try {
       const answer = await appAgentPort.answer({
         question: trimmed,
-        records,
-        metrics,
-        findings,
+        records: questionRecords,
+        metrics: questionMetrics,
+        findings: questionFindings,
         scopeLabel,
-        retrievalScope: buildQaRetrievalScope(appliedFilter, contextProject),
+        retrievalScope: buildQaRetrievalScope(questionScope.filter, questionContextProject),
         onProgress: setAgentProgressStage,
         onToken: (_delta, fullText) => {
           latestStreamText = fullText;
           setStreamingAnswer(fullText);
         },
+        onReasoningToken: (_delta, fullText) => {
+          latestReasoningText = fullText;
+          setSourceReasoningContent(fullText);
+        },
       });
       setAgentProgressStage("archive-turn");
+      const reasoningContent = latestReasoningText || answer.reasoningContent || "";
       const assistantMessage: QaMessage = {
         id: `${nextThreadId}-answer-${previousTurns.length + 2}`,
         role: "assistant",
@@ -2830,10 +2902,13 @@ function AiQaScreen({
         meta: `${Math.ceil(nextTurns.length / 2)} 轮问答 / ${answer.evidenceQuotes.length} 条引用证据`,
         turns: nextTurns,
         evidenceQuotes: answer.evidenceQuotes,
+        scopeSnapshot: questionScope,
+        reasoningContent,
       };
       draftConversationIdRef.current = null;
       setActiveMessages(nextTurns);
       setActiveEvidenceQuotes(answer.evidenceQuotes);
+      setSourceReasoningContent(reasoningContent);
       setConversationThreads((current) => {
         const withoutCurrent = current.filter((thread) => thread.id !== nextThreadId);
         return [nextThread, ...withoutCurrent];
@@ -2842,9 +2917,9 @@ function AiQaScreen({
     } catch {
       const fallbackAnswer = answerWorkbenchQuestion({
         question: trimmed,
-        records,
-        metrics,
-        findings,
+        records: questionRecords,
+        metrics: questionMetrics,
+        findings: questionFindings,
         scopeLabel,
       });
       const errorTurns: QaMessage[] = [
@@ -2864,10 +2939,13 @@ function AiQaScreen({
           meta: `${Math.ceil(errorTurns.length / 2)} 轮问答 / ${fallbackAnswer.evidenceQuotes.length} 条引用证据`,
           turns: errorTurns,
           evidenceQuotes: fallbackAnswer.evidenceQuotes,
+          scopeSnapshot: questionScope,
+          reasoningContent: "",
         };
         const withoutCurrent = current.filter((thread) => thread.id !== nextThreadId);
         return [fallbackThread, ...withoutCurrent];
       });
+      setSourceReasoningContent("");
       onAction(`AI 问答已返回本地数据结果：「${title}」`);
     } finally {
       draftConversationIdRef.current = null;
@@ -2879,7 +2957,9 @@ function AiQaScreen({
   useEffect(() => {
     if (!initialQuestion || handledInitialQuestionRef.current === initialQuestion) return;
     handledInitialQuestionRef.current = initialQuestion;
-    void runQuestion(initialQuestion);
+    const dashboardScope = buildQaScopeSnapshot(initialScopeMode, appliedFilter, null);
+    setScopeMode(initialScopeMode);
+    void runQuestion(initialQuestion, dashboardScope);
     onPendingQuestionHandled();
   }, [initialQuestion]);
 
@@ -2904,33 +2984,49 @@ function AiQaScreen({
     setActiveEvidenceQuotes([]);
     setAgentProgressStage(null);
     setStreamingAnswer("");
+    setSourceReasoningContent("");
     setQuestion("");
     onAction("已开启新对话");
   };
 
-  const useCurrentFilter = () => {
-    if (scopeMode === "filtered") {
-      setScopeMode("free");
-      setSelectedThreadId(null);
-      setAnswerSaved(false);
-      setActiveMessages([]);
-      setActiveEvidenceQuotes([]);
-      setAgentProgressStage(null);
-      setStreamingAnswer("");
-      setQuestion("");
-      onAction("已取消仪表盘范围");
-      return;
+  const applyConversationScope = (snapshot: QaScopeSnapshot, message: string) => {
+    if (selectedThreadId) {
+      setConversationThreads((current) =>
+        current.map((thread) =>
+          thread.id === selectedThreadId
+            ? {
+                ...thread,
+                scopeSnapshot: snapshot,
+              }
+            : thread,
+        ),
+      );
+    } else {
+      setScopeMode(snapshot.mode);
+      setContextProjectId(snapshot.contextProjectId);
     }
-    setScopeMode("filtered");
-    setSelectedThreadId(null);
-    setContextProjectId(null);
     setAnswerSaved(false);
-    setActiveMessages([]);
-    setActiveEvidenceQuotes([]);
-    setAgentProgressStage(null);
-    setStreamingAnswer("");
-    setQuestion("");
-    onAction("已使用仪表盘范围");
+    onAction(message);
+  };
+
+  const useFreeConversationScope = () => {
+    const snapshot = buildQaScopeSnapshot("free", defaultDrilldownFilter, activeScopeSnapshot.contextProjectId);
+    applyConversationScope(snapshot, "当前对话已改为自由范围");
+  };
+
+  const useDashboardConversationScope = () => {
+    const snapshot = buildQaScopeSnapshot("filtered", appliedFilter, activeScopeSnapshot.contextProjectId);
+    applyConversationScope(snapshot, "当前对话已使用仪表盘范围");
+  };
+
+  const updateConversationProject = (project: ImportedProject) => {
+    const nextProjectId = project.id === activeScopeSnapshot.contextProjectId ? null : project.id;
+    const baseFilter = activeScopeSnapshot.mode === "filtered" ? activeScopeSnapshot.filter : defaultDrilldownFilter;
+    const snapshot = buildQaScopeSnapshot(activeScopeSnapshot.mode, baseFilter, nextProjectId);
+    applyConversationScope(
+      snapshot,
+      nextProjectId ? `当前对话已参考「${project.name}」` : "当前对话已取消参考项目",
+    );
   };
 
   const toggleFavorite = (threadId: string, threadTitle: string) => {
@@ -2954,6 +3050,8 @@ function AiQaScreen({
         meta: `${Math.ceil(activeMessages.length / 2)} 轮问答 / ${activeEvidenceQuotes.length} 条引用证据`,
         turns: activeMessages,
         evidenceQuotes: activeEvidenceQuotes,
+        scopeSnapshot: selectedThreadForView?.scopeSnapshot ?? activeScopeSnapshot,
+        reasoningContent: sourceReasoningContent,
       };
       setConversationThreads((current) => {
         const withoutCurrent = current.filter((thread) => thread.id !== selectedThreadId);
@@ -2975,6 +3073,7 @@ function AiQaScreen({
       setActiveEvidenceQuotes([]);
       setAgentProgressStage(null);
       setStreamingAnswer("");
+      setSourceReasoningContent("");
       setAnswerSaved(false);
       draftConversationIdRef.current = `qa-${Date.now()}`;
     }
@@ -3005,10 +3104,6 @@ function AiQaScreen({
             <MessageSquareText size={15} />
             新建对话
           </button>
-          <button className={scopeMode === "filtered" ? "ghost-button active" : "ghost-button"} type="button" onClick={useCurrentFilter}>
-            <Filter size={15} />
-            {scopeMode === "filtered" ? "取消仪表盘范围" : "使用仪表盘范围"}
-          </button>
         </div>
         <div className="qa-record-selector">
           <div className="selector-label">
@@ -3026,6 +3121,9 @@ function AiQaScreen({
               setActiveEvidenceQuotes([]);
               setAgentProgressStage(null);
               setStreamingAnswer("");
+              setSourceReasoningContent("");
+              setScopeMode("free");
+              setContextProjectId(null);
               onAction("已回到新对话");
             }}
           >
@@ -3046,6 +3144,7 @@ function AiQaScreen({
                 setActiveEvidenceQuotes(nextThreadId ? thread.evidenceQuotes ?? buildLegacyThreadEvidenceQuotes(thread.id) : []);
                 setAgentProgressStage(null);
                 setStreamingAnswer("");
+                setSourceReasoningContent(nextThreadId ? thread.reasoningContent ?? "" : "");
                 onAction(nextThreadId ? `已打开问答记录「${thread.title}」` : "已关闭问答记录");
               }}
             >
@@ -3074,25 +3173,42 @@ function AiQaScreen({
       </section>
       <section className="panel chat-panel chatbot-panel">
         <div className="chat-context-bar">
-          <div>
+          <div className="chat-context-main">
             <strong>{isHistoryView ? "继续历史问答" : contextLabel}</strong>
+            <span>{activeScopeSnapshot.label}</span>
           </div>
-          <StatusBadge tone={scopeMode === "filtered" ? "warning" : "neutral"}>
-            {scopeMode === "filtered" ? "带入仪表盘范围" : "自由新对话"}
-          </StatusBadge>
+          <div className="chat-context-actions">
+            <button
+              className={activeScopeSnapshot.mode === "free" ? "ghost-button active" : "ghost-button"}
+              type="button"
+              onClick={useFreeConversationScope}
+              disabled={isRunning}
+            >
+              自由范围
+            </button>
+            <button
+              className={activeScopeSnapshot.mode === "filtered" ? "ghost-button active" : "ghost-button"}
+              type="button"
+              onClick={useDashboardConversationScope}
+              disabled={isRunning}
+            >
+              <Filter size={15} />
+              使用仪表盘范围
+            </button>
+            <StatusBadge tone={activeScopeSnapshot.mode === "filtered" ? "warning" : "neutral"}>
+              {activeScopeSnapshot.mode === "filtered" ? "带入仪表盘范围" : "自由范围"}
+            </StatusBadge>
+          </div>
         </div>
         <div className="qa-reference-bar" aria-label="本次对话参考项目">
           <span>参考项目</span>
           {qaProjects.map((project) => (
             <button
-              className={project.id === contextProjectId ? "active" : ""}
+              className={project.id === activeScopeSnapshot.contextProjectId ? "active" : ""}
               key={project.id}
               type="button"
-              onClick={() => {
-                const nextProjectId = project.id === contextProjectId ? null : project.id;
-                setContextProjectId(nextProjectId);
-                onAction(nextProjectId ? `已把「${project.name}」作为本次对话参考项目` : "已取消参考项目，本次对话不指定项目");
-              }}
+              disabled={isRunning}
+              onClick={() => updateConversationProject(project)}
             >
               <strong>{project.name}</strong>
               <small>{project.type} / {project.count} 条</small>
@@ -3105,28 +3221,31 @@ function AiQaScreen({
               <span>新对话</span>
               <p>输入问题后开始查询。</p>
             </div>
-          ) : activeMessages.map((message) => (
-            <div className={message.role === "user" ? "message user-message" : "message ai-message"} key={message.id}>
-              <span>{message.role === "user" ? "你的问题" : "数据查询结果"}</span>
-              <p>{message.text}</p>
-            </div>
-          ))}
-          {agentProgressSteps.length ? (
-            <div className="query-progress" aria-label="AI 问答查询进度">
-              {agentProgressSteps.map((step) => (
-                <span className={step.status === "pending" ? "" : "done"} key={step.id}>
-                  {step.label}
-                </span>
+          ) : (
+            <>
+              {activeMessages.map((message, index) => (
+                <Fragment key={message.id}>
+                  <div className={message.role === "user" ? "message user-message" : "message ai-message"}>
+                    <span>{message.role === "user" ? "你的问题" : "数据查询结果"}</span>
+                    <p>{message.text}</p>
+                  </div>
+                  {message.role === "user" && index === lastUserMessageIndex ? (
+                    <ReasoningMessage
+                      isRunning={isRunning}
+                      reasoningContent={sourceReasoningContent}
+                      hasAnswer={activeMessages.some((item) => item.role === "assistant")}
+                    />
+                  ) : null}
+                </Fragment>
               ))}
-            </div>
-          ) : null}
+            </>
+          )}
           {streamingAnswer ? (
             <div className="message ai-message streaming">
               <span>实时返回</span>
               <p>{streamingAnswer}</p>
             </div>
           ) : null}
-          {agentProgressSteps.length ? <small className="query-progress-percent">{progressPercent}%</small> : null}
         </div>
         <div className="suggested-question-strip" aria-label="建议追问">
           {suggestedQuestions.slice(0, 3).map((item) => (
@@ -3159,10 +3278,9 @@ function AiQaScreen({
       </section>
       <AiQaSidePanel
         entryScope={entryScope}
-        contextProject={contextProject}
+        contextProject={activeContextProject}
         selectedThread={selectedThread}
-        appliedFilter={appliedFilter}
-        scopeMode={scopeMode}
+        scopeSnapshot={activeScopeSnapshot}
         activeSecondaryId={activeSecondaryId}
         answerSaved={answerSaved}
         evidenceExpanded={evidenceExpanded}
@@ -3171,6 +3289,30 @@ function AiQaScreen({
         onSaveCurrentAnswer={saveCurrentAnswer}
         onToggleEvidenceExpanded={toggleEvidenceExpanded}
       />
+    </div>
+  );
+}
+
+function ReasoningMessage({
+  isRunning,
+  reasoningContent,
+  hasAnswer,
+}: {
+  isRunning: boolean;
+  reasoningContent: string;
+  hasAnswer: boolean;
+}) {
+  if (!isRunning && !reasoningContent && !hasAnswer) return null;
+
+  return (
+    <div className={reasoningContent ? "message reasoning-message active" : "message reasoning-message"} aria-label="AI 思考过程">
+      <span>AI 思考过程</span>
+      <p>
+        {reasoningContent ||
+          (isRunning
+            ? "等待模型返回 reasoning_content。"
+            : "当前回答没有可展示的源头 reasoning_content。")}
+      </p>
     </div>
   );
 }
@@ -3438,7 +3580,7 @@ function HistoryPanel() {
   );
 }
 
-function ImportStatusPanel() {
+function ImportStatusPanel({ hasSelectedFile = true }: { hasSelectedFile?: boolean }) {
   return (
     <aside className="panel import-status-panel">
       <div className="panel-head">
@@ -3449,16 +3591,33 @@ function ImportStatusPanel() {
         <FileSpreadsheet size={18} />
       </div>
       <div className="import-status-list">
-        <article className="import-status-item pass">
-          <span>当前识别结果</span>
-          <strong>1,240 条反馈</strong>
-          <small>已完成字段识别和基础校验</small>
-        </article>
-        <article className="import-status-item warning">
-          <span>需要人工确认</span>
-          <strong>推荐意愿缺失 64 条</strong>
-          <small>缺失样本不参与 NPS 计算</small>
-        </article>
+        {hasSelectedFile ? (
+          <>
+            <article className="import-status-item pass">
+              <span>当前识别结果</span>
+              <strong>1,240 条反馈</strong>
+              <small>已完成字段识别和基础校验</small>
+            </article>
+            <article className="import-status-item warning">
+              <span>需要人工确认</span>
+              <strong>推荐意愿缺失 64 条</strong>
+              <small>缺失样本不参与 NPS 计算</small>
+            </article>
+          </>
+        ) : (
+          <>
+            <article className="import-status-item">
+              <span>当前识别结果</span>
+              <strong>未开始</strong>
+              <small>上传文件后显示识别结果</small>
+            </article>
+            <article className="import-status-item">
+              <span>人工确认</span>
+              <strong>待识别</strong>
+              <small>字段识别后显示确认项</small>
+            </article>
+          </>
+        )}
       </div>
       <div className="import-history-section">
         <div className="section-mini-head">
@@ -3512,48 +3671,7 @@ function CurrentScopeCard({
   );
 }
 
-function DrilldownSidePanel({
-  filterState,
-  filteredRows,
-  riskRows,
-  workOrderDraft,
-  onAction,
-}: {
-  filterState: DrilldownFilter;
-  filteredRows: string[][];
-  riskRows: string[][];
-  workOrderDraft: WorkOrderDraft | null;
-  onAction: (message: string) => void;
-}) {
-  const currentObject = filterState.selectedCenters.length
-    ? buildSelectionLabel(filterState.selectedCenters, "全部服务中心")
-    : buildAreaScope(filterState.selectedRegions, filterState.selectedCities, filterState.selectedCenters);
-
-  return (
-    <aside className="side-stack drilldown-side">
-      <section className="panel drilldown-path-panel">
-        <div className="panel-head compact">
-          <div>
-            <p>当前筛选范围</p>
-            <h2>{currentObject}</h2>
-          </div>
-        </div>
-        <div className="path-list">
-          <p><span>时间</span><strong>{formatTimeRange(filterState.timeRange, filterState.customTimeRange, filterState.timePeriod)}</strong></p>
-          <p><span>项目</span><strong>{buildProjectScope(filterState.selectedProjectIds)}</strong></p>
-          <p><span>区域</span><strong>{buildSelectionLabel(filterState.selectedRegions, "全国")}</strong></p>
-          <p><span>城市</span><strong>{buildSelectionLabel(filterState.selectedCities, "全部城市")}</strong></p>
-          <p><span>中心</span><strong>{buildSelectionLabel(filterState.selectedCenters, "全部服务中心")}</strong></p>
-          <p><span>结果</span><strong>{getCurrentScopeRawFeedbackTotal(filterState, filteredRows).toLocaleString()} 条 / {riskRows.length} 个风险对象</strong></p>
-        </div>
-      </section>
-      {workOrderDraft ? <WorkOrderDraftCard draft={workOrderDraft} onAction={onAction} /> : null}
-    </aside>
-  );
-}
-
 function DashboardActionBar({
-  filterState,
   filteredRows,
   rawFeedbackOpen,
   canCreateWorkOrder,
@@ -3563,7 +3681,6 @@ function DashboardActionBar({
   onGoQa,
   onCreateWorkOrder,
 }: {
-  filterState: DrilldownFilter;
   filteredRows: string[][];
   rawFeedbackOpen: boolean;
   canCreateWorkOrder: boolean;
@@ -3573,13 +3690,13 @@ function DashboardActionBar({
   onGoQa: () => void;
   onCreateWorkOrder: () => void;
 }) {
-  const total = getCurrentScopeRawFeedbackTotal(filterState, filteredRows);
+  const serviceCenterCount = filteredRows.length;
   return (
     <div className="dashboard-action-bar">
       <div className="dashboard-action-summary">
-        <span>当前筛选范围</span>
-        <strong>{buildDrilldownScope(filterState)}</strong>
-        <small>{total.toLocaleString()} 条命中原文 / {filteredRows.length} 个服务中心</small>
+        <span>下一步动作</span>
+        <strong>{serviceCenterCount.toLocaleString()} 个服务中心可继续处理</strong>
+        <small>按上方范围继续</small>
       </div>
       <div className="dashboard-action-buttons">
         <button className="ghost-button" type="button" onClick={onToggleRawFeedback}>
@@ -3609,8 +3726,7 @@ function AiQaSidePanel({
   entryScope,
   contextProject,
   selectedThread,
-  appliedFilter,
-  scopeMode,
+  scopeSnapshot,
   activeSecondaryId,
   answerSaved,
   evidenceExpanded,
@@ -3622,8 +3738,7 @@ function AiQaSidePanel({
   entryScope: string;
   contextProject: (typeof qaProjects)[number] | null;
   selectedThread: QaThread | null;
-  appliedFilter: DrilldownFilter;
-  scopeMode: QaScopeMode;
+  scopeSnapshot: QaScopeSnapshot;
   activeSecondaryId: string;
   answerSaved: boolean;
   evidenceExpanded: boolean;
@@ -3636,8 +3751,8 @@ function AiQaSidePanel({
     ? selectedThread.title
     : contextProject
       ? contextProject.name
-      : scopeMode === "filtered"
-        ? buildAreaScope(appliedFilter.selectedRegions, appliedFilter.selectedCities, appliedFilter.selectedCenters)
+      : scopeSnapshot.mode === "filtered"
+        ? buildAreaScope(scopeSnapshot.filter.selectedRegions, scopeSnapshot.filter.selectedCities, scopeSnapshot.filter.selectedCenters)
         : "本轮回答";
 
   return (
@@ -4643,6 +4758,33 @@ function buildQaAgentScopeLabel(filter: DrilldownFilter, contextProject?: Import
     buildAreaScope(filter.selectedRegions, filter.selectedCities, filter.selectedCenters),
     buildTopicScope(filter.selectedTopics),
   ].join(" / ");
+}
+
+function buildQaScopeSnapshot(mode: QaScopeMode, filter: DrilldownFilter, contextProjectId: string | null): QaScopeSnapshot {
+  const contextProject = getQaProjectById(contextProjectId);
+  const snapshotFilter = cloneDrilldownFilter(mode === "filtered" ? filter : defaultDrilldownFilter);
+  return {
+    mode,
+    filter: snapshotFilter,
+    contextProjectId,
+    label: buildQaAgentScopeLabel(snapshotFilter, contextProject),
+  };
+}
+
+function getQaProjectById(projectId: string | null): ImportedProject | null {
+  if (!projectId) return null;
+  return qaProjects.find((project) => project.id === projectId) ?? null;
+}
+
+function cloneDrilldownFilter(filter: DrilldownFilter): DrilldownFilter {
+  return {
+    ...filter,
+    selectedProjectIds: [...filter.selectedProjectIds],
+    selectedRegions: [...filter.selectedRegions],
+    selectedCities: [...filter.selectedCities],
+    selectedCenters: [...filter.selectedCenters],
+    selectedTopics: [...filter.selectedTopics],
+  };
 }
 
 function buildQaRetrievalScope(filter: DrilldownFilter, contextProject?: ImportedProject | null) {
