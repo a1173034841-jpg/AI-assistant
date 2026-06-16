@@ -791,11 +791,11 @@ const secondaryWorkspaceCopy: Record<string, {
   "profile-data": {
     eyebrow: "数据权限",
     title: "数据权限与授权范围",
-    summary: "查看区域级、项目级和导入权限，不承载具体后端平台信息。",
+    summary: "查看区域级、项目级和导入权限。",
     items: [
       { title: "区域权限", text: "当前为华东大区区域级权限。", status: "区域级", tone: "pass" },
       { title: "项目权限", text: "可查看已授权项目和归档项目。", status: "已授权", tone: "pass" },
-      { title: "数据边界", text: "AI 问答不会改变其他页面筛选状态。", status: "隔离", tone: "pass" },
+      { title: "默认范围", text: "默认进入全部项目和全部区域。", status: "全部", tone: "pass" },
     ],
     action: "查看授权",
   },
@@ -861,6 +861,12 @@ function WorkbenchApp() {
     }
     setActiveScreen(screen);
   };
+  const openInitialReportOutput = () => {
+    openScreen("report", "dashboard-report", "dashboard");
+    setSecondaryNavOpen(true);
+    setPrimaryCollapsed(true);
+    notify("已生成初始复盘，并打开报告输出");
+  };
   const handlePrimaryChange = (primaryId: PrimaryNavId) => {
     const primary = primaryNavItems.find((item) => item.id === primaryId) ?? primaryNavItems[0];
     const secondary = primary.items.find((item) => item.id === primary.defaultSecondaryId) ?? primary.items[0];
@@ -923,8 +929,15 @@ function WorkbenchApp() {
         <main className="screen-shell">
           <ScreenHeading activeMeta={activeMeta} primaryTitle={activePrimary?.title ?? "工作台"} secondaryTitle={activeSecondary?.title ?? "首页"} />
           {notice ? <ActionNotice message={notice} /> : null}
-          {activeScreen === "home" ? <HomeScreen onPrimaryChange={handlePrimaryChange} /> : null}
-          {activeScreen === "import" ? <ImportScreen activeSecondaryId={activeSecondary?.id ?? "new-upload"} onAction={notify} /> : null}
+          {activeScreen === "home" ? <HomeScreen onOpenScreen={openScreen} /> : null}
+          {activeScreen === "import" ? (
+            <ImportScreen
+              activeSecondaryId={activeSecondary?.id ?? "new-upload"}
+              onAction={notify}
+              onOpenScreen={openScreen}
+              onOpenInitialReport={openInitialReportOutput}
+            />
+          ) : null}
           {activeScreen === "projects" ? (
             <ProjectsScreen
               activeSecondaryId={activeSecondary?.id ?? "projects-all"}
@@ -1187,7 +1200,7 @@ function Sidebar({
         ) : null}
       </section>
       {showSecondary && activePrimary ? (
-        <section className="secondary-sidebar" aria-label={`${activePrimary.title} 二级导航`}>
+        <section className="secondary-sidebar" aria-label={`${activePrimary.title}功能列表`}>
           <div className="secondary-sidebar-head">
             <span>{activePrimary.title}</span>
             <strong>{activePrimary.summary}</strong>
@@ -1198,10 +1211,10 @@ function Sidebar({
                 className={item.id === activeSecondaryId ? "secondary-nav-item active" : "secondary-nav-item"}
                 key={item.id}
                 onClick={() => onSecondaryChange(item)}
+                title={item.summary}
                 type="button"
               >
                 <strong>{item.title}</strong>
-                <small>{item.summary}</small>
               </button>
             ))}
           </nav>
@@ -1233,10 +1246,8 @@ function ScreenHeading({
     <section className="screen-heading">
       <div>
         <nav className="screen-breadcrumb" aria-label="当前页面层级">
-          <span>一级导航</span>
           <strong>{primaryTitle}</strong>
           <ChevronRight size={14} />
-          <span>二级导航</span>
           <strong>{secondaryTitle}</strong>
         </nav>
         <h1>{activeMeta.title}</h1>
@@ -1246,9 +1257,9 @@ function ScreenHeading({
 }
 
 function HomeScreen({
-  onPrimaryChange,
+  onOpenScreen,
 }: {
-  onPrimaryChange: (primary: PrimaryNavId) => void;
+  onOpenScreen: (screen: ScreenId, secondaryId?: string, primaryId?: PrimaryNavId) => void;
 }) {
   return (
     <div className="screen-grid home-layout" data-route-panel="home">
@@ -1268,12 +1279,12 @@ function HomeScreen({
         </div>
         <div className="home-work-grid">
           {[
-            { primary: "new-project" as const, title: "继续导入校验", text: "补能体验活动反馈.csv 仍需确认字段映射。", action: "进入新建项目" },
-            { primary: "projects" as const, title: "查看过往项目", text: "五一售后服务专项、四月售后月报和活动反馈。", action: "查看项目" },
-            { primary: "dashboard" as const, title: "继续报告仪表盘", text: "按时间、项目、区域、主题继续筛选和输出报告。", action: "进入仪表盘" },
-            { primary: "query" as const, title: "继续 AI 问答", text: "可以新建自由问答，也可以打开问答记录。", action: "进入问答" },
+            { screen: "import" as const, secondary: "new-validation", primary: "new-project" as const, title: "继续导入校验", text: "补能体验活动反馈.csv 仍需确认字段映射。", action: "进入导入校验" },
+            { screen: "projects" as const, secondary: "projects-all", primary: "projects" as const, title: "查看过往项目", text: "五一售后服务专项、四月售后月报和活动反馈。", action: "查看全部项目" },
+            { screen: "drilldown" as const, secondary: "dashboard-scope", primary: "dashboard" as const, title: "继续报告仪表盘", text: "按时间、项目、区域、主题继续筛选和输出报告。", action: "进入筛选范围" },
+            { screen: "query" as const, secondary: "qa-new", primary: "query" as const, title: "继续 AI 问答", text: "可以新建自由问答，也可以打开问答记录。", action: "进入新建问答" },
           ].map((item) => (
-            <button className="home-work-card" key={item.title} type="button" onClick={() => onPrimaryChange(item.primary)}>
+            <button className="home-work-card" key={item.title} type="button" onClick={() => onOpenScreen(item.screen, item.secondary, item.primary)}>
               <strong>{item.title}</strong>
               <span>{item.text}</span>
               <small>{item.action}</small>
@@ -1291,7 +1302,7 @@ function HomeScreen({
           </div>
           <div className="project-card-list">
             {importedProjects.map((project) => (
-              <button key={project.id} type="button" onClick={() => onPrimaryChange("projects")}>
+              <button key={project.id} type="button" onClick={() => onOpenScreen("projects", "projects-detail", "projects")}>
                 <strong>{project.name}</strong>
                 <span>{project.dateRange}</span>
                 <small>{project.count} 条反馈 · {project.type}</small>
@@ -1308,7 +1319,7 @@ function HomeScreen({
           </div>
           <div className="home-rule-list">
             {queryThreads.map((thread) => (
-              <button key={thread.id} type="button" onClick={() => onPrimaryChange("query")}>
+              <button key={thread.id} type="button" onClick={() => onOpenScreen("query", "qa-new", "query")}>
                 <strong>{thread.title}</strong>
                 <span>{thread.meta}</span>
               </button>
@@ -1317,27 +1328,6 @@ function HomeScreen({
         </section>
       </aside>
     </div>
-  );
-}
-
-function SecondaryContextPanel({ secondaryId, className = "" }: { secondaryId: string; className?: string }) {
-  const copy = secondaryPanelCopy[secondaryId] ?? secondaryPanelCopy["dashboard-overview"];
-  return (
-    <section className={`panel secondary-context-panel ${className}`}>
-      <div className="panel-head compact">
-        <div>
-          <p>当前二级功能</p>
-          <h2>{copy.title}</h2>
-        </div>
-        <StatusBadge tone="pass">已进入</StatusBadge>
-      </div>
-      <p>{copy.text}</p>
-      <div className="secondary-context-metrics">
-        {copy.metrics.map((metric) => (
-          <span key={metric}>{metric}</span>
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -1368,7 +1358,17 @@ function SecondaryWorkspace({ secondaryId }: { secondaryId: string }) {
   );
 }
 
-function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: string; onAction: (message: string) => void }) {
+function ImportScreen({
+  activeSecondaryId,
+  onAction,
+  onOpenScreen,
+  onOpenInitialReport,
+}: {
+  activeSecondaryId: string;
+  onAction: (message: string) => void;
+  onOpenScreen: (screen: ScreenId, secondaryId?: string, primaryId?: PrimaryNavId) => void;
+  onOpenInitialReport: () => void;
+}) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedFileName, setSelectedFileName] = useState("");
   const [recognitionStatus, setRecognitionStatus] = useState("待复核");
@@ -1376,8 +1376,8 @@ function ImportScreen({ activeSecondaryId, onAction }: { activeSecondaryId: stri
 
   if (activeSecondaryId === "new-mapping") return <ImportMappingPage onAction={onAction} />;
   if (activeSecondaryId === "new-validation") return <ImportValidationPage onAction={onAction} />;
-  if (activeSecondaryId === "new-report") return <ImportInitialReportPage onAction={onAction} />;
-  if (activeSecondaryId === "new-history") return <ImportHistoryPage onAction={onAction} />;
+  if (activeSecondaryId === "new-report") return <ImportInitialReportPage onAction={onAction} onOpenReport={onOpenInitialReport} />;
+  if (activeSecondaryId === "new-history") return <ImportHistoryPage onAction={onAction} onOpenScreen={onOpenScreen} />;
 
   const openUploadPicker = () => {
     fileInputRef.current?.click();
@@ -1627,7 +1627,7 @@ function ImportValidationPage({ onAction }: { onAction: (message: string) => voi
   );
 }
 
-function ImportInitialReportPage({ onAction }: { onAction: (message: string) => void }) {
+function ImportInitialReportPage({ onAction, onOpenReport }: { onAction: (message: string) => void; onOpenReport: () => void }) {
   const [reportGenerated, setReportGenerated] = useState(false);
 
   return (
@@ -1675,7 +1675,8 @@ function ImportInitialReportPage({ onAction }: { onAction: (message: string) => 
             type="button"
             onClick={() => {
               setReportGenerated(true);
-              onAction("初始复盘报告已生成，可进入报告仪表盘查看");
+              onAction("初始复盘报告已生成");
+              onOpenReport();
             }}
           >
             {reportGenerated ? "已生成初始复盘" : "生成初始复盘"}
@@ -1718,9 +1719,16 @@ function ReportGenerationChecklist() {
   );
 }
 
-function ImportHistoryPage({ onAction }: { onAction: (message: string) => void }) {
+function ImportHistoryPage({
+  onAction,
+  onOpenScreen,
+}: {
+  onAction: (message: string) => void;
+  onOpenScreen: (screen: ScreenId, secondaryId?: string, primaryId?: PrimaryNavId) => void;
+}) {
   const [lastRefreshAt, setLastRefreshAt] = useState("未刷新");
   const [processingBatch, setProcessingBatch] = useState("未选择");
+  const pendingBatchName = "补能体验活动反馈.csv";
 
   return (
     <div className="screen-grid import-page-layout" data-route-panel="new-history">
@@ -1757,8 +1765,9 @@ function ImportHistoryPage({ onAction }: { onAction: (message: string) => void }
             className="primary-button"
             type="button"
             onClick={() => {
-              setProcessingBatch("补能体验活动反馈.csv");
-              onAction("已选择继续处理需要配置的导入批次");
+              setProcessingBatch(pendingBatchName);
+              onOpenScreen("import", "new-mapping", "new-project");
+              onAction(`已进入「${pendingBatchName}」字段映射`);
             }}
           >
             {processingBatch === "未选择" ? "继续处理" : "处理中"}
@@ -2037,6 +2046,30 @@ function ProjectDetailView({
   onArchive: () => void;
 }) {
   const [detailMode, setDetailMode] = useState("项目概览");
+  const reportRows = [
+    ["总复盘报告", project.dateRange, project.id === "energy-event" ? "待生成" : "已生成", project.id === "energy-event" ? "字段配置后生成" : "可继续查看"],
+    ["服务问题闭环", project.dateRange, project.id === "energy-event" ? "待生成" : "已生成", project.id === "energy-event" ? "缺少评分字段" : "等待与解释问题"],
+    ["满意度归因", project.dateRange, project.id === "energy-event" ? "待生成" : "已生成", project.id === "energy-event" ? "缺少 NPS 字段" : "评分与低分原因"],
+  ];
+  const batchRows = project.id === "may-service"
+    ? [
+        ["五一售后服务专项_2026-05.csv", "2026-06-01 09:32", "已导入", "1,240"],
+        ["五一售后服务补充样本.csv", "2026-06-02 10:18", "已导入", "386"],
+      ]
+    : project.id === "energy-event"
+      ? [["补能体验活动反馈.csv", "2026-05-30 11:42", "需配置", "328"]]
+      : [["四月售后月报_2026-04.csv", "2026-05-03 14:20", "已导入", "1,086"]];
+  const detailBody = detailMode === "报告输出记录" ? (
+    <div className="project-detail-subsection">
+      <strong>报告输出记录</strong>
+      <DataTable columns={["报告", "范围", "状态", "摘要"]} rows={reportRows} toneColumn={2} />
+    </div>
+  ) : detailMode === "导入批次" ? (
+    <div className="project-detail-subsection">
+      <strong>导入批次</strong>
+      <DataTable columns={["文件", "导入时间", "状态", "行数"]} rows={batchRows} toneColumn={2} />
+    </div>
+  ) : null;
 
   return (
     <div className="project-detail-view">
@@ -2051,6 +2084,7 @@ function ProjectDetailView({
         <div><dt>报告状态</dt><dd>{project.id === "energy-event" ? "字段待配置" : "总复盘已生成"}</dd></div>
         <div><dt>最近更新</dt><dd>{project.id === "may-service" ? "2026-06-01 09:32" : "2026-05-28 17:45"}</dd></div>
       </dl>
+      {detailBody}
       <div className="project-detail-actions">
         <button className="primary-button" type="button" onClick={onOpen}>打开该项目仪表盘</button>
         <button
@@ -3323,6 +3357,7 @@ function ProfileScreen({ activeSecondaryId, onAction }: { activeSecondaryId: str
   useEffect(() => {
     setActiveProfileAction(route.actions[0]?.label ?? "查看状态");
   }, [activeSecondaryId]);
+  const actionCards = getProfileActionCards(activeSecondaryId, activeProfileAction, route.cards);
   const profileIdentity = [
     { title: "张伟", text: "区域运营主管 / 员工编号 AS-2024-9981", status: "华东大区", tone: "pass" as const },
     { title: "账号邮箱", text: "zhangwei.aftersales@example.com", status: "已验证", tone: "pass" as const },
@@ -3382,7 +3417,7 @@ function ProfileScreen({ activeSecondaryId, onAction }: { activeSecondaryId: str
           ))}
         </div>
         <div className="profile-route-grid">
-          {route.cards.map((card) => (
+          {actionCards.map((card) => (
             <article className={`secondary-workspace-card ${card.tone}`} key={card.title}>
               <div>
                 <strong>{card.title}</strong>
@@ -3432,6 +3467,80 @@ function ProfileScreen({ activeSecondaryId, onAction }: { activeSecondaryId: str
 
     </div>
   );
+}
+
+function getProfileActionCards(activeSecondaryId: string, action: string, fallbackCards: Array<{ title: string; text: string; status: string; tone: StatusTone }>) {
+  const profiles: Record<string, Record<string, Array<{ title: string; text: string; status: string; tone: StatusTone }>>> = {
+    "profile-settings": {
+      "个人设置": [
+        { title: "角色名称", text: "区域运营主管，负责华东售后反馈复盘。", status: "已设置", tone: "pass" },
+        { title: "默认入口", text: "登录后进入工作台首页。", status: "首页", tone: "neutral" },
+        { title: "语言与格式", text: "中文界面，数字使用千分位显示。", status: "已设置", tone: "pass" },
+      ],
+      "默认范围": [
+        { title: "默认区域", text: "华东大区。", status: "可改", tone: "neutral" },
+        { title: "默认项目", text: "不预选项目，进入仪表盘显示全部项目。", status: "全部项目", tone: "pass" },
+        { title: "默认时间", text: "不强制套用时间筛选。", status: "全部时间", tone: "pass" },
+      ],
+      "提醒偏好": [
+        { title: "导入完成", text: "字段识别完成后提醒。", status: "开启", tone: "pass" },
+        { title: "报告生成", text: "初始复盘生成后提醒。", status: "开启", tone: "pass" },
+        { title: "工单邮件", text: "打开邮箱草稿后仍需人工确认发送。", status: "提醒", tone: "warning" },
+      ],
+    },
+    "profile-account": {
+      "导出权限": [
+        { title: "报告导出", text: "当前可导出 Markdown 报告。", status: "可用", tone: "pass" },
+        { title: "批量导出", text: "批量导出需主管审批。", status: "需审批", tone: "warning" },
+        { title: "原文导出", text: "仅导出授权范围内原文。", status: "受控", tone: "pass" },
+      ],
+      "审批记录": [
+        { title: "批量导出申请", text: "2026-06-09 提交，等待主管确认。", status: "待审批", tone: "warning" },
+        { title: "导入权限", text: "2026-05-28 已开通。", status: "已通过", tone: "pass" },
+        { title: "归档查看", text: "默认允许查看。", status: "已通过", tone: "pass" },
+      ],
+      "账号状态": [
+        { title: "登录状态", text: "当前账号正常。", status: "正常", tone: "pass" },
+        { title: "席位", text: "区域运营席位。", status: "有效", tone: "pass" },
+        { title: "最近登录", text: "2026-06-09 22:18。", status: "已记录", tone: "neutral" },
+      ],
+    },
+    "profile-privacy": {
+      "脱敏规则": [
+        { title: "手机号", text: "默认显示为 138****2187。", status: "开启", tone: "pass" },
+        { title: "姓名 / 车牌 / VIN", text: "默认不进入报告正文。", status: "开启", tone: "pass" },
+        { title: "证据引用", text: "引用前保留授权范围校验。", status: "受控", tone: "pass" },
+      ],
+      "问答记录": [
+        { title: "历史问答", text: "当前 3 条，可在 AI 问答内删除。", status: "3 条", tone: "neutral" },
+        { title: "收藏问答", text: "收藏状态保留在当前工作台会话。", status: "会话内", tone: "neutral" },
+        { title: "清理边界", text: "清理个人记录不影响项目报告。", status: "隔离", tone: "pass" },
+      ],
+      "导出范围": [
+        { title: "报告", text: "导出当前授权范围内报告。", status: "可导出", tone: "pass" },
+        { title: "原文", text: "分页查看，按需导出。", status: "受控", tone: "pass" },
+        { title: "工单", text: "最多带入代表证据，完整原文回到原文池查看。", status: "受控", tone: "pass" },
+      ],
+    },
+    "profile-data": {
+      "区域授权": [
+        { title: "华东大区", text: "可查看杭州、上海等授权城市。", status: "已授权", tone: "pass" },
+        { title: "跨区查看", text: "跨区域导出需审批。", status: "需审批", tone: "warning" },
+        { title: "默认范围", text: "进入仪表盘不强制限定区域。", status: "全部区域", tone: "pass" },
+      ],
+      "项目授权": [
+        { title: "五一售后服务专项", text: "可查看报告、原文和问答记录。", status: "已授权", tone: "pass" },
+        { title: "四月售后月报", text: "已归档，可继续查看。", status: "已授权", tone: "pass" },
+        { title: "补能体验活动反馈", text: "字段待配置。", status: "需配置", tone: "warning" },
+      ],
+      "归档权限": [
+        { title: "查看归档", text: "归档项目不进入默认范围。", status: "可查看", tone: "pass" },
+        { title: "恢复归档", text: "可从归档项目页恢复。", status: "可操作", tone: "pass" },
+        { title: "删除项目", text: "当前原型不提供删除入口。", status: "不可用", tone: "neutral" },
+      ],
+    },
+  };
+  return profiles[activeSecondaryId]?.[action] ?? fallbackCards;
 }
 
 function getProfileRouteConfig(activeSecondaryId: string) {

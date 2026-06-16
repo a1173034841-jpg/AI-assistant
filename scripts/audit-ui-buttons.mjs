@@ -167,10 +167,22 @@ async function main() {
   if (!reportDownload.suggestedFilename().endsWith(".md")) throw new Error(`report export did not create markdown download: ${reportDownload.suggestedFilename()}`);
   checks.push("topbar export creates markdown download");
   await expectRoutePanel(page, "home", "default home route");
-  await expectText(page, "一级导航", "tertiary heading shows primary level label");
-  await expectText(page, "二级导航", "tertiary heading shows secondary level label");
+  await expectNoText(page, "一级导航", "tertiary heading removes internal primary label");
+  await expectNoText(page, "二级导航", "tertiary heading removes internal secondary label");
   await expectText(page, "最近工作区", "home shows recent workspace");
   await expectText(page, "继续处理最近的数据、报告和问答", "home has concise work queue");
+  await page.getByRole("button", { name: /继续导入校验/ }).click();
+  await expectRoutePanel(page, "new-validation", "home import card opens validation route");
+  await clickPrimary(page, "新建项目");
+  await clickSecondary(page, "上传反馈数据");
+  await page.goto("http://127.0.0.1:5174/");
+  await expectRoutePanel(page, "home", "home route restored for route-card checks");
+  await page.getByRole("button", { name: /继续报告仪表盘/ }).click();
+  await expectRoutePanel(page, "dashboard-scope", "home dashboard card opens scope route");
+  await page.goto("http://127.0.0.1:5174/");
+  await page.getByRole("button", { name: /继续 AI 问答/ }).click();
+  await expectRoutePanel(page, "qa-new", "home qa card opens new qa route");
+  await page.goto("http://127.0.0.1:5174/");
   await expectContextValue(page, "项目范围", "全部项目", "top context defaults to all projects when no project is selected");
   await expectContextValue(page, "时间范围", "全部时间", "top context defaults to all time before filtering");
   await expectContextValue(page, "样本量", "2,654 条", "top context sample count starts from all imported projects");
@@ -182,6 +194,9 @@ async function main() {
   await expectNoText(page, "Agent", "no internal agent wording");
   await expectNoText(page, "Supabase", "no backend brand leakage");
   await expectNoText(page, "Stitch", "no design tool leakage");
+  await expectNoText(page, "当前二级功能", "no duplicate secondary context panel wording");
+  await expectNoText(page, "不承载具体后端平台信息", "no internal backend explanation copy");
+  await expectNoText(page, "不会改变其他页面筛选状态", "no internal state-boundary explanation copy");
   await expectSidebarHoverDoesNotOpenSecondary(page);
 
   await clickPrimary(page, "新建项目");
@@ -218,6 +233,15 @@ async function main() {
   await clickSecondary(page, "导入校验");
   await expectRoutePanel(page, "new-validation", "validation is full route");
   await expectNoRoutePanel(page, "new-mapping", "validation replaces mapping route");
+  await clickSecondary(page, "导入历史");
+  await expectRoutePanel(page, "new-history", "import history route");
+  await page.getByRole("button", { name: "继续处理" }).click();
+  await expectRoutePanel(page, "new-mapping", "history continue opens field mapping");
+  await expectText(page, "已进入「补能体验活动反馈.csv」字段映射", "history continue provides batch context");
+  await clickSecondary(page, "生成初始复盘");
+  await expectRoutePanel(page, "new-report", "initial report route");
+  await page.locator(".route-main-panel").getByRole("button", { name: "生成初始复盘" }).click();
+  await expectRoutePanel(page, "dashboard-report", "initial report generation opens report output");
 
   await clickPrimary(page, "查看项目");
   await expectRoutePanel(page, "projects-all", "all projects route");
@@ -236,8 +260,10 @@ async function main() {
   await expectRoutePanel(page, "projects-detail", "project detail route");
   await page.getByRole("button", { name: "查看报告输出" }).click();
   await expectText(page, "报告输出记录", "project detail report button works");
+  await expectText(page, "服务问题闭环", "project detail report button renders report rows");
   await page.getByRole("button", { name: "查看导入批次" }).click();
   await expectText(page, "导入批次", "project detail batch button works");
+  await expectText(page, "五一售后服务补充样本.csv", "project detail batch button renders batch rows");
   await page.locator(".project-detail-actions").getByRole("button", { name: "归档项目", exact: true }).click();
   await expectText(page, "已归档", "project archive entry works");
   await clickSecondary(page, "归档项目");
@@ -528,12 +554,18 @@ async function main() {
   await clickSecondary(page, "账号状态");
   await expectRoutePanel(page, "profile-account", "profile account route");
   await expectText(page, "账号状态与审批", "profile account content visible");
+  await page.getByRole("button", { name: "审批记录" }).click();
+  await expectText(page, "批量导出申请", "profile account actions change main content");
   await clickSecondary(page, "隐私设置");
   await expectRoutePanel(page, "profile-privacy", "profile privacy route");
   await expectText(page, "隐私设置与数据清理", "profile privacy content visible");
+  await page.getByRole("button", { name: "问答记录" }).click();
+  await expectText(page, "清理个人记录不影响项目报告", "profile privacy actions change main content");
   await clickSecondary(page, "数据权限");
   await expectRoutePanel(page, "profile-data", "profile data route");
   await expectText(page, "可访问项目", "profile data content visible");
+  await page.getByRole("button", { name: "归档权限" }).click();
+  await expectText(page, "当前原型不提供删除入口", "profile data actions change main content");
 
   await expectVisibleTertiaryPanelsScrollable(page, "visible tertiary panels expose vertical scroll");
   await expectNoLargeBlankArea(page, "no large blank panels after route changes");
