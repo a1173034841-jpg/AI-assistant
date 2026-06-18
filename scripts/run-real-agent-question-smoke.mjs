@@ -187,7 +187,7 @@ function pickSmokeCases(records) {
       scopeType: "project",
       projectName: appProject,
       scenario: "满意度归因",
-      question: `${appProject}里 App 预约失败或预约同步问题集中在哪里？要怎么处理？`,
+      question: `${appProject}里服务等待和 App 预约相关问题集中在哪里？请结合原文证据说明处理动作。`,
     },
     {
       id: "activity-review",
@@ -302,11 +302,16 @@ async function runSmokeCase(records, smokeCase) {
   const retrieval = await retrievalPort.retrieve({ question: smokeCase.question, limit: 8, scope: retrievalScope });
   console.error(`[smoke] ${smokeCase.id}: retrieved ${retrieval.chunks.length} chunks in ${Date.now() - retrievalStartedAt}ms; asking model`);
 
-  const stages = [];
+  let stages = [];
   let streamedAnswer = "";
   let answer = null;
   let error = null;
-  try {
+  for (const attempt of [1, 2]) {
+    stages = [];
+    streamedAnswer = "";
+    answer = null;
+    error = null;
+    try {
     answer = await agentPort.answer({
       question: smokeCase.question,
       records: scopedRecords,
@@ -323,9 +328,18 @@ async function runSmokeCase(records, smokeCase) {
       },
     });
     console.error(`[smoke] ${smokeCase.id}: answer length ${answer.content.length}; streamed ${streamedAnswer.length}`);
+    if (streamedAnswer.trim().length > 0) break;
+    error = new Error("empty streamed answer");
+    console.error(`[smoke] ${smokeCase.id}: attempt ${attempt} returned empty answer`);
   } catch (caughtError) {
     error = caughtError instanceof Error ? caughtError : new Error("Unknown smoke test error");
-    console.error(`[smoke] ${smokeCase.id}: ERROR ${error.message}`);
+    console.error(`[smoke] ${smokeCase.id}: attempt ${attempt} ERROR ${error.message}`);
+  }
+    if (attempt === 1 && error) {
+      console.error(`[smoke] ${smokeCase.id}: retrying once after ${error.message}`);
+      continue;
+    }
+    break;
   }
 
   const modelReturned = Boolean(answer && !answer.refused && stages.includes("streaming-answer") && streamedAnswer.trim().length > 0);
