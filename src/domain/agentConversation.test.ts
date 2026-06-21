@@ -67,7 +67,7 @@ describe("agent conversation model", () => {
 
   it("auto names a new chatbot conversation from the first real question", () => {
     expect(buildAutoConversationTitle("等待时间主要影响哪些服务中心？")).toBe("等待时间影响服务中心");
-    expect(buildAutoConversationTitle("杭州西溪服务中心低分原因是什么，怎么闭环？")).toBe("杭州西溪低分闭环");
+    expect(buildAutoConversationTitle("深圳福田服务中心低分原因是什么，怎么闭环？")).toBe("深圳福田服务中心低分闭环");
   });
 
   it("builds an operational answer instead of a generic placeholder", () => {
@@ -77,16 +77,17 @@ describe("agent conversation model", () => {
       projectName: "五一售后服务专项",
     });
 
-    expect(answer).toContain("杭州西溪服务中心");
+    expect(answer).not.toContain("杭州西溪服务中心");
     expect(answer).toContain("等待");
     expect(answer).toContain("下一步");
+    expect(answer).toContain("当前范围");
   });
 
   it("removes a conversation and clears selection when the selected record is deleted", () => {
     const result = removeQaConversationRecord(
       [
         { id: "qa-1", title: "等待时间影响服务中心", meta: "2 轮" },
-        { id: "qa-2", title: "杭州西溪低分闭环", meta: "1 轮" },
+        { id: "qa-2", title: "深圳福田服务中心低分闭环", meta: "1 轮" },
       ],
       "qa-1",
       "qa-1",

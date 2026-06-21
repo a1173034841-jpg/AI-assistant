@@ -72,9 +72,10 @@ export function createSupabaseAgentRetrievalPort(env: SupabaseRetrievalEnv): {
       const rows = await fetchMockBatchChunks(config, request.question);
       const chunks = rows.map(mapSupabaseChunkRow);
       const scopedChunks = filterChunksByScope(chunks, request.scope);
+      const hasScopeFilter = hasRetrievalScopeFilter(request.scope);
       const ranked = rankAgentChunks({
         question: request.question,
-        chunks: scopedChunks.length ? scopedChunks : chunks,
+        chunks: hasScopeFilter ? scopedChunks : chunks,
         limit: request.limit ?? 8,
       });
 
@@ -84,6 +85,10 @@ export function createSupabaseAgentRetrievalPort(env: SupabaseRetrievalEnv): {
       };
     },
   };
+}
+
+function hasRetrievalScopeFilter(scope?: SupabaseAgentRetrievalScope): boolean {
+  return Boolean(scope?.projectNames?.length || scope?.cities?.length || scope?.serviceCenters?.length);
 }
 
 function filterChunksByScope(

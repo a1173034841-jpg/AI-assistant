@@ -1,6 +1,8 @@
 import { chromium } from "playwright";
+import { resolve } from "node:path";
 
 const baseUrl = process.env.AUDIT_URL ?? "http://127.0.0.1:5174/";
+const manualCsvPath = resolve("data/manual-test/manual_after_sales_upload_sample_2026-06-17.csv");
 const checks = [];
 
 async function expectText(page, text, label) {
@@ -157,6 +159,8 @@ async function main() {
   const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   await page.goto(baseUrl);
+  await page.evaluate(() => localStorage.clear());
+  await page.reload({ waitUntil: "networkidle" });
 
   await expectText(page, "售后复盘工作台", "app loaded");
   await page.getByRole("button", { name: "复制摘要" }).click();
@@ -171,21 +175,23 @@ async function main() {
   await expectNoText(page, "二级导航", "tertiary heading removes internal secondary label");
   await expectText(page, "最近工作区", "home shows recent workspace");
   await expectText(page, "继续处理最近的数据、报告和问答", "home has concise work queue");
-  await page.getByRole("button", { name: /继续导入校验/ }).click();
-  await expectRoutePanel(page, "new-validation", "home import card opens validation route");
+  await expectText(page, "当前导入", "home exposes import state");
+  await expectText(page, "未上传", "home starts without pretending a file was imported");
+  await page.getByRole("button", { name: /上传反馈数据/ }).click();
+  await expectRoutePanel(page, "new-upload", "home import card opens upload route before a file exists");
   await clickPrimary(page, "新建项目");
   await clickSecondary(page, "上传反馈数据");
   await page.goto("http://127.0.0.1:5174/");
   await expectRoutePanel(page, "home", "home route restored for route-card checks");
-  await page.getByRole("button", { name: /继续报告仪表盘/ }).click();
+  await page.locator(".home-work-card").filter({ hasText: /查看空仪表盘|进入筛选范围/ }).click();
   await expectRoutePanel(page, "dashboard-scope", "home dashboard card opens scope route");
   await page.goto("http://127.0.0.1:5174/");
-  await page.getByRole("button", { name: /继续 AI 问答/ }).click();
+  await page.getByRole("button", { name: /打开问答/ }).click();
   await expectRoutePanel(page, "qa-new", "home qa card opens new qa route");
   await page.goto("http://127.0.0.1:5174/");
   await expectContextValue(page, "项目范围", "全部项目", "top context defaults to all projects when no project is selected");
   await expectContextValue(page, "时间范围", "全部时间", "top context defaults to all time before filtering");
-  await expectContextValue(page, "样本量", "2,654 条", "top context sample count starts from all imported projects");
+  await expectContextValue(page, "样本量", "0 条", "top context starts empty before upload");
   await expectContextNoText(page, "2026 五一售后服务专项", "top context does not show a project before selection");
   await expectContextNoText(page, "问卷星 / App 内问卷 / 企微链接", "top context does not expose unverified source labels");
   await expectSecondaryClosed(page, "no secondary nav before primary click");
@@ -216,36 +222,37 @@ async function main() {
   const templateDownload = await templateDownloadPromise;
   if (!templateDownload.suggestedFilename().endsWith(".csv")) throw new Error(`template download did not create csv: ${templateDownload.suggestedFilename()}`);
   checks.push("template download creates csv");
-  await page.locator('input[aria-label="上传售后反馈表格"]').setInputFiles("public/templates/after_sales_feedback_test_480.csv");
-  await expectText(page, "当前文件：after_sales_feedback_test_480.csv", "upload input records selected file");
+  await page.locator('input[aria-label="上传售后反馈表格"]').setInputFiles(manualCsvPath);
+  await expectText(page, "当前文件：manual_after_sales_upload_sample_2026-06-17.csv", "upload input records selected file");
+  await expectText(page, "180 条反馈", "upload reads manual sample row count");
+  await expectText(page, "无必填缺失", "upload status does not show fake confirmation work");
   await clickSecondary(page, "字段映射");
   await expectRoutePanel(page, "new-mapping", "field mapping is full route");
   await expectNoText(page, "拖拽文件到这里", "field mapping replaces upload page");
-  await expectText(page, "2 项需确认", "mapping starts with two real confirmation items");
-  await page.locator(".action-list").getByRole("button", { name: /推荐意愿缺失 64 条/ }).click();
+  await expectText(page, "可保存", "mapping is immediately saveable when manual sample has no required issues");
+  await page.locator(".action-list").getByRole("button", { name: /推荐意愿完整/ }).click();
   await expectText(page, "nps_score", "manual confirmation shows selected field details");
-  await expectText(page, "不参与 NPS，保留原文和评分", "manual confirmation shows selected handling result");
-  await page.getByRole("button", { name: "确认当前项" }).click();
-  await expectText(page, "1 项需确认", "confirming recommendation issue updates pending count");
-  await page.locator(".action-list").getByRole("button", { name: /服务评分缺失 22 条/ }).click();
-  await page.getByRole("button", { name: "确认当前项" }).click();
-  await expectText(page, "2/2", "manual confirmation progress reaches complete state");
-  await expectText(page, "可保存", "mapping can be saved after required confirmations");
+  await expectText(page, "未发现推荐意愿评分缺失", "manual confirmation detail shows real pass state");
+  const confirmDisabled = await page.getByRole("button", { name: "无需确认" }).isDisabled();
+  if (!confirmDisabled) throw new Error("pass-state mapping confirmation should be disabled");
+  checks.push("mapping pass-state confirmation is not a fake action");
   await page.getByRole("button", { name: "保存映射" }).click();
   await expectText(page, "映射已保存", "mapping save reflects confirmed reminders");
   await clickSecondary(page, "导入校验");
   await expectRoutePanel(page, "new-validation", "validation is full route");
   await expectNoRoutePanel(page, "new-mapping", "validation replaces mapping route");
   await page.getByRole("button", { name: "重新校验" }).click();
-  await expectText(page, "第 2 次校验后仍需人工确认", "validation rerun updates validation table state");
-  await expectText(page, "0 条 / 已复扫", "validation rerun updates duplicate scan result");
+  await expectText(page, "第 2 次校验", "validation rerun recalculates current validation table");
+  await expectText(page, "180", "validation rerun keeps real row count");
   await clickSecondary(page, "导入历史");
   await expectRoutePanel(page, "new-history", "import history route");
   await page.getByRole("button", { name: "刷新" }).click();
-  await expectText(page, "待配置", "import history refresh updates pending batch state");
+  await expectText(page, "导入历史已按当前上传文件刷新", "import history refresh uses current upload state");
+  await expectText(page, "manual_after_sales_upload_sample_2026-06-17.csv", "import history keeps uploaded file");
+  await expectText(page, "180", "import history keeps real row count");
   await page.getByRole("button", { name: "继续处理" }).click();
   await expectRoutePanel(page, "new-mapping", "history continue opens field mapping");
-  await expectText(page, "已进入「补能体验活动反馈.csv」字段映射", "history continue provides batch context");
+  await expectText(page, "已进入「manual_after_sales_upload_sample_2026-06-17.csv」字段映射", "history continue provides batch context");
   await clickSecondary(page, "生成初始复盘");
   await expectRoutePanel(page, "new-report", "initial report route");
   await page.locator(".route-main-panel").getByRole("button", { name: "生成初始复盘" }).click();
@@ -253,17 +260,17 @@ async function main() {
 
   await clickPrimary(page, "查看项目");
   await expectRoutePanel(page, "projects-all", "all projects route");
-  await page.locator(".project-filter-toolbar").getByRole("button", { name: "售后服务" }).click();
+  await page.locator(".project-filter-toolbar").getByRole("button", { name: "服务回访" }).click();
   let visibleProjectRows = await page.locator(".projects-main-panel .data-table tbody tr").count();
-  if (visibleProjectRows !== 1) throw new Error(`project toolbar should filter to one service project, got ${visibleProjectRows}`);
+  if (visibleProjectRows < 1) throw new Error(`project toolbar should filter to real service-return projects, got ${visibleProjectRows}`);
   await page.locator(".project-filter-toolbar").getByRole("button", { name: "全部类型" }).click();
   visibleProjectRows = await page.locator(".projects-main-panel .data-table tbody tr").count();
-  if (visibleProjectRows !== 3) throw new Error(`project toolbar should restore all projects, got ${visibleProjectRows}`);
+  if (visibleProjectRows < 6) throw new Error(`project toolbar should restore uploaded projects, got ${visibleProjectRows}`);
   checks.push("project toolbar filters the project list");
-  await page.getByRole("button", { name: /五一售后服务专项/ }).first().click();
-  await expectText(page, "已选择「五一售后服务专项」", "project can be selected");
+  await page.getByRole("button", { name: /问题复发闭环回访/ }).first().click();
+  await expectText(page, "已选择「问题复发闭环回访」", "project can be selected");
   await clickSecondary(page, "归档项目");
-  await expectText(page, "未限定具体项目", "project selection clears on route switch");
+  await expectText(page, "问题复发闭环回访", "project selection persists across project subroutes");
   await clickSecondary(page, "项目详情");
   await expectRoutePanel(page, "projects-detail", "project detail route");
   await page.getByRole("button", { name: "查看报告输出" }).click();
@@ -271,14 +278,13 @@ async function main() {
   await expectText(page, "服务问题闭环", "project detail report button renders report rows");
   await page.getByRole("button", { name: "查看导入批次" }).click();
   await expectText(page, "导入批次", "project detail batch button works");
-  await expectText(page, "五一售后服务补充样本.csv", "project detail batch button renders batch rows");
+  await expectText(page, "1 个批次", "project detail batch button renders uploaded batch summary");
   await page.locator(".project-detail-actions").getByRole("button", { name: "归档项目", exact: true }).click();
   await expectText(page, "已归档", "project archive entry works");
   await clickSecondary(page, "归档项目");
-  await expectText(page, "五一售后服务专项", "archived project appears in archive route");
-  await page.locator(".project-card-list").getByRole("button", { name: /五一售后服务专项/ }).click();
-  await page.getByRole("button", { name: "恢复归档" }).first().click();
-  await expectText(page, "已恢复：五一售后服务专项", "project restore updates archive state");
+  await expectText(page, "问题复发闭环回访", "archived project appears in archive route");
+  await page.locator(".project-action-strip").getByRole("button", { name: "恢复归档" }).click();
+  await expectText(page, "已恢复：问题复发闭环回访", "project restore updates archive state");
 
   await clickPrimary(page, "报告仪表盘");
   await expectRoutePanel(page, "dashboard-overview", "dashboard overview route");
@@ -320,49 +326,49 @@ async function main() {
   if ((await filterPanel.getByText("问题主题", { exact: true }).count()) > 0) throw new Error("scope filter should not duplicate the issue-topic selector");
   checks.push("dashboard scope renders time project area without duplicated topic selector");
 
-  await filterPanel.getByRole("button", { name: /五一售后服务专项/ }).first().click();
-  await expectText(page, "全部时间 / 五一售后服务专项 / 全国 / 全部主题", "project-only scope does not require time or area changes");
-  await expectContextValue(page, "项目范围", "五一售后服务专项", "top context reflects selected project");
-  await expectContextValue(page, "样本量", "1,240 条", "top context sample count reflects selected project");
+  await filterPanel.getByRole("button", { name: /问题复发闭环回访/ }).first().click();
+  await expectText(page, "全部时间 / 问题复发闭环回访 / 全国 / 全部主题", "project-only scope does not require time or area changes");
+  await expectContextValue(page, "项目范围", "问题复发闭环回访", "top context reflects selected project");
+  await expectContextValue(page, "样本量", "33 条", "top context sample count reflects selected project");
   await page.getByRole("button", { name: "进入报告输出" }).click();
   await expectRoutePanel(page, "dashboard-report", "project-only scope can enter report output");
-  await expectText(page, "全部时间 / 五一售后服务专项 / 全国 / 全部主题", "report output receives project-only filter snapshot");
+  await expectText(page, "全部时间 / 问题复发闭环回访 / 全国 / 全部主题", "report output receives project-only filter snapshot");
 
   await clickPrimary(page, "报告仪表盘");
-  await expectText(page, "全部时间 / 五一售后服务专项 / 全国 / 全部主题", "dashboard keeps applied project filter after returning from report");
+  await expectText(page, "全部时间 / 问题复发闭环回访 / 全国 / 全部主题", "dashboard keeps applied project filter after returning from report");
   await page.locator(".dashboard-action-bar").getByRole("button", { name: "AI 问答" }).click();
-  await expectText(page, "本对话使用仪表盘范围：全部时间 / 五一售后服务专项 / 全国 / 全部主题", "project-only scope can enter AI QA");
+  await expectText(page, "本对话使用仪表盘范围：全部时间 / 问题复发闭环回访 / 全国 / 全部主题", "project-only scope can enter AI QA");
 
   await clickPrimary(page, "报告仪表盘");
   await clickSecondary(page, "筛选范围");
   filterPanel = page.locator(".filter-panel");
-  await filterPanel.getByRole("button", { name: /五一售后服务专项/ }).first().click();
+  await filterPanel.getByRole("button", { name: /问题复发闭环回访/ }).first().click();
   await expectText(page, "全部时间 / 全部项目 / 全国 / 全部主题", "project selection can be cleared without changing time or area");
   await expectContextValue(page, "项目范围", "全部项目", "top context returns to all projects after project clear");
-  await expectContextValue(page, "样本量", "2,654 条", "top context restores all-time all-project sample count");
+  await expectContextValue(page, "样本量", "180 条", "top context restores all-time all-project sample count");
 
-  await filterPanel.getByRole("button", { name: /^华东/ }).click();
-  await expectText(page, "全部时间 / 全部项目 / 区域：华东 / 全部主题", "area-only scope does not require project changes");
-  await expectContextValue(page, "样本量", "186 条", "top context sample count follows area filter");
-  await filterPanel.getByRole("button", { name: /^杭州/ }).click();
-  await filterPanel.getByRole("button", { name: /^西溪服务中心/ }).click();
-  await expectText(page, "全部时间 / 全部项目 / 服务中心：西溪服务中心 / 全部主题", "city and service center cascade applies inside same filter panel");
+  await filterPanel.getByRole("button", { name: /^华南/ }).click();
+  await expectText(page, "全部时间 / 全部项目 / 区域：华南 / 全部主题", "area-only scope does not require project changes");
+  await expectContextValue(page, "样本量", "33 条", "top context sample count follows area filter");
+  await filterPanel.getByRole("button", { name: /^深圳/ }).click();
+  await filterPanel.getByRole("button", { name: /^深圳福田服务中心/ }).click();
+  await expectText(page, "全部时间 / 全部项目 / 服务中心：深圳福田服务中心 / 全部主题", "city and service center cascade applies inside same filter panel");
 
   await filterPanel.getByRole("button", { name: "日" }).click();
-  await filterPanel.locator('input[type="date"]').first().fill("2026-05-22");
-  await expectText(page, "日：2026-05-22 / 全部项目 / 服务中心：西溪服务中心 / 全部主题", "time change preserves project and area filters");
+  await filterPanel.locator('input[type="date"]').first().fill("2026-05-01");
+  await expectText(page, "日：2026-05-01 / 全部项目 / 服务中心：深圳福田服务中心 / 全部主题", "time change preserves project and area filters");
 
   await filterPanel.getByRole("button", { name: "周" }).click();
-  await filterPanel.locator('input[type="week"]').first().fill("2026-W22");
-  await expectText(page, "周：2026-W22 / 全部项目 / 服务中心：西溪服务中心 / 全部主题", "free week period reflected in parallel scope");
+  await filterPanel.locator('input[type="week"]').first().fill("2026-W18");
+  await expectText(page, "周：2026-W18 / 全部项目 / 服务中心：深圳福田服务中心 / 全部主题", "free week period reflected in parallel scope");
   await filterPanel.getByRole("button", { name: "季度" }).click();
   await filterPanel.locator(".quarter-inputs").locator('input[type="number"]').fill("2026");
   await filterPanel.locator(".quarter-inputs select").selectOption("Q3");
-  await expectText(page, "季度：2026 Q3 / 全部项目 / 服务中心：西溪服务中心 / 全部主题", "free quarter period reflected in parallel scope");
+  await expectText(page, "季度：2026 Q3 / 全部项目 / 服务中心：深圳福田服务中心 / 全部主题", "free quarter period reflected in parallel scope");
   await filterPanel.getByRole("button", { name: "自定义" }).click();
-  await filterPanel.locator('input[type="date"]').first().fill("2026-05-03");
-  await filterPanel.locator('input[type="date"]').last().fill("2026-05-19");
-  await expectText(page, "2026-05-03 至 2026-05-19 / 全部项目 / 服务中心：西溪服务中心 / 全部主题", "custom date range reflected in parallel scope");
+  await filterPanel.locator('input[type="date"]').first().fill("2026-05-01");
+  await filterPanel.locator('input[type="date"]').last().fill("2026-06-06");
+  await expectText(page, "2026-05-01 至 2026-06-06 / 全部项目 / 服务中心：深圳福田服务中心 / 全部主题", "custom date range reflected in parallel scope");
   checks.push("parallel filters are independent and shared by report and AI");
 
   await page.locator(".drilldown-results-panel").getByRole("button", { name: "打开原文池" }).click();
@@ -377,7 +383,7 @@ async function main() {
   if (rawFeedbackCount !== 20) throw new Error(`raw feedback pool should render exactly one page of 20 cards, got ${rawFeedbackCount}`);
   checks.push("raw feedback pool renders only current page");
   await page.locator(".drilldown-results-panel").getByRole("button", { name: "下一页" }).click();
-  await expectText(page, "21-40 条", "raw feedback next page changes visible range");
+  await expectText(page, "21-33 条", "raw feedback next page changes visible range");
 
   await clickSecondary(page, "筛选范围");
   await expectRoutePanel(page, "dashboard-scope", "dashboard scope route");
@@ -412,11 +418,11 @@ async function main() {
   await clickSecondary(page, "筛选范围");
   await expectText(page, "项目范围", "project filter remains visible inside scope filter panel");
   filterPanel = page.locator(".filter-panel");
-  await filterPanel.getByRole("button", { name: /五一售后服务专项/ }).first().click();
-  await filterPanel.getByRole("button", { name: /四月售后月报/ }).first().click();
+  await filterPanel.getByRole("button", { name: /问题复发闭环回访/ }).first().click();
+  await filterPanel.getByRole("button", { name: /维修质量专项复盘/ }).first().click();
   await expectText(page, "2 个项目", "multi project selection reflected");
-  await filterPanel.getByRole("button", { name: /四月售后月报/ }).first().click();
-  await expectText(page, "五一售后服务专项", "project can be deselected");
+  await filterPanel.getByRole("button", { name: /维修质量专项复盘/ }).first().click();
+  await expectText(page, "问题复发闭环回访", "project can be deselected");
 
   await clickSecondary(page, "问题主题");
   await expectRoutePanel(page, "dashboard-topic", "dashboard topic route");
@@ -429,8 +435,8 @@ async function main() {
   }
   checks.push("dashboard topic only renders topic selector");
   await page.locator(".filter-panel").getByRole("button", { name: /^等待时间/ }).click();
-  await expectText(page, "2026-05-03 至 2026-05-19 / 五一售后服务专项 / 服务中心：西溪服务中心 / 主题：等待时间", "topic selection completes work-order scope");
-  await expectContextValue(page, "样本量", "186 条", "top context sample count follows topic filter");
+  await expectText(page, "2026-05-01 至 2026-06-06 / 问题复发闭环回访 / 服务中心：深圳福田服务中心 / 主题：等待时间", "topic selection completes work-order scope");
+  await expectContextValue(page, "样本量", "23 条", "top context sample count follows topic filter");
   await expectNoText(page, "当前仪表盘内容已更新", "routine dashboard filters do not show global status prompts");
   const duplicateTopicCards = await page.locator(".drilldown-results-panel .topic-card-grid, .drilldown-results-panel .topic-card").count();
   if (duplicateTopicCards > 0) throw new Error(`dashboard topic result still duplicates topic selector cards: ${duplicateTopicCards}`);
@@ -441,12 +447,13 @@ async function main() {
   await clickSecondary(page, "筛选范围");
   await expectText(page, "区域", "scope route still exposes region filter in same panel");
   filterPanel = page.locator(".filter-panel");
+  await filterPanel.getByRole("button", { name: "全部项目" }).click();
   await filterPanel.getByRole("button", { name: "全国" }).click();
   await expectText(page, "全国", "area filter can be cleared before selecting another cascade");
-  await filterPanel.getByRole("button", { name: /^华东/ }).click();
-  await filterPanel.getByRole("button", { name: /^杭州/ }).click();
-  await filterPanel.getByRole("button", { name: /^西溪服务中心/ }).click();
-  await expectText(page, "服务中心：西溪服务中心", "center selection reflected");
+  await filterPanel.getByRole("button", { name: /^华南/ }).click();
+  await filterPanel.getByRole("button", { name: /^深圳/ }).click();
+  await filterPanel.getByRole("button", { name: /^深圳福田服务中心/ }).click();
+  await expectText(page, "服务中心：深圳福田服务中心", "center selection reflected");
   const incompleteWorkOrderDisabled = await page.locator(".dashboard-action-bar").getByRole("button", { name: "生成服务工单" }).isDisabled();
   if (!incompleteWorkOrderDisabled) throw new Error("work order should wait until a concrete issue topic is selected");
   checks.push("work order generation waits for selected service center and issue topic");
@@ -467,7 +474,7 @@ async function main() {
   await expectText(page, "工单正文已复制", "work order body can be copied");
   const mailtoHref = await page.getByRole("link", { name: "打开邮箱草稿" }).getAttribute("href");
   if (!mailtoHref?.startsWith("mailto:")) throw new Error(`work order email link is not mailto: ${mailtoHref}`);
-  if (!mailtoHref.includes("xixi.service-center%40example.com") && !mailtoHref.includes("xixi.service-center@example.com")) {
+  if (!mailtoHref.includes("shenzhen-futian.service-center%40example.com") && !mailtoHref.includes("shenzhen-futian.service-center@example.com")) {
     throw new Error(`work order email link does not target selected service center: ${mailtoHref}`);
   }
   checks.push("work order mailto draft is available");
@@ -507,20 +514,10 @@ async function main() {
   await expectText(page, "带入仪表盘范围", "qa scope can be applied");
   await page.locator(".chat-context-bar").getByRole("button", { name: "自由范围" }).click();
   await expectText(page, "自由范围", "qa scope can be deselected");
-  await page.getByRole("button", { name: /五一售后服务专项/ }).first().click();
-  await expectText(page, "参考项目：五一售后服务专项", "qa project can be selected");
-  await page.getByRole("button", { name: /五一售后服务专项/ }).first().click();
+  await page.getByRole("button", { name: /问题复发闭环回访/ }).first().click();
+  await expectText(page, "参考项目：问题复发闭环回访", "qa project can be selected");
+  await page.getByRole("button", { name: /问题复发闭环回访/ }).first().click();
   await expectText(page, "自由新对话", "qa project can be deselected without leaving chat");
-  await page.getByRole("button", { name: /杭州西溪服务中心低分原因/ }).first().click();
-  await page.locator(".chat-context-bar").getByText("全部时间 / 全部项目 / 全国 / 全部主题", { exact: false }).waitFor({ state: "visible", timeout: 4500 });
-  checks.push("qa history keeps its saved scope in the chat context bar");
-  await page.locator(".chat-context-bar").getByRole("button", { name: "使用仪表盘范围" }).click();
-  await expectText(page, "当前对话已使用仪表盘范围", "qa history can change its own scope to dashboard scope");
-  await page.locator(".chat-context-bar").getByRole("button", { name: "自由范围" }).click();
-  await expectText(page, "当前对话已改为自由范围", "qa history can change its own scope back to free scope");
-  await page.getByRole("button", { name: /杭州西溪服务中心低分原因/ }).first().click();
-  await expectText(page, "新对话", "qa history record can be deselected");
-  await page.locator(".qa-record-selector").getByRole("button", { name: /^新对话/ }).click();
   await page.getByRole("button", { name: "新建对话" }).click();
   await page.locator(".composer textarea").fill("等待时间主要影响哪些服务中心？");
   await page.getByRole("button", { name: "发送查询" }).click();
@@ -553,6 +550,14 @@ async function main() {
   await page.getByRole("button", { name: "保存当前回答" }).click();
   await expectText(page, "等待时间主要影响哪些服务中心？", "qa saved answer appears in records");
   await expectText(page, "已保存到问答记录", "qa save action reflects saved state");
+  await clickPrimary(page, "报告仪表盘");
+  await clickPrimary(page, "AI 问答");
+  await expectText(page, "等待时间影响服务中心", "qa saved history persists across route changes");
+  await page.getByRole("button", { name: /等待时间影响服务中心/ }).first().click();
+  await page.locator(".chat-context-bar").getByRole("button", { name: "使用仪表盘范围" }).click();
+  await expectText(page, "当前对话已使用仪表盘范围", "qa history can change its own scope to dashboard scope");
+  await page.locator(".chat-context-bar").getByRole("button", { name: "自由范围" }).click();
+  await expectText(page, "当前对话已改为自由范围", "qa history can change its own scope back to free scope");
   await page.getByRole("button", { name: "新建对话" }).click();
   await page.locator(".composer textarea").fill("App 预约同步异常集中在哪里？");
   await page.getByRole("button", { name: "发送查询" }).click();
@@ -568,17 +573,17 @@ async function main() {
   await clickSecondary(page, "账号状态");
   await expectRoutePanel(page, "profile-account", "profile account route");
   await expectText(page, "账号状态与审批", "profile account content visible");
-  await page.getByRole("button", { name: "审批记录" }).click();
+  await page.locator(".profile-action-grid").getByRole("tab", { name: "审批记录" }).click();
   await expectText(page, "批量导出申请", "profile account actions change main content");
   await clickSecondary(page, "隐私设置");
   await expectRoutePanel(page, "profile-privacy", "profile privacy route");
   await expectText(page, "隐私设置与数据清理", "profile privacy content visible");
-  await page.getByRole("button", { name: "问答记录" }).click();
+  await page.locator(".profile-action-grid").getByRole("tab", { name: "问答记录" }).click();
   await expectText(page, "清理个人记录不影响项目报告", "profile privacy actions change main content");
   await clickSecondary(page, "数据权限");
   await expectRoutePanel(page, "profile-data", "profile data route");
   await expectText(page, "可访问项目", "profile data content visible");
-  await page.getByRole("button", { name: "归档权限" }).click();
+  await page.locator(".profile-action-grid").getByRole("tab", { name: "归档权限" }).click();
   await expectText(page, "仅管理员可处理删除申请", "profile data actions change main content");
   await expectNoText(page, "当前原型", "profile does not expose prototype wording");
   await expectNoText(page, "不反向修改", "profile does not expose internal state wording");

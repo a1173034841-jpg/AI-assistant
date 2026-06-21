@@ -32,15 +32,21 @@ import {
 } from "../domain/agentConversation";
 import { buildFindingsForScenario, buildMetricSummary } from "../domain/analysisRules";
 import { answerWorkbenchQuestion, buildSuggestedAgentQuestions } from "../domain/agentRules";
+import { parseAfterSalesFeedbackCsv } from "../domain/csvImport";
 import { createDeepSeekAgentPort } from "../domain/deepseekAgentPort";
+import { buildImportValidationSummary, type ImportValidationSummary } from "../domain/importValidation";
+import { mapSurveyExportToFeedback } from "../domain/importMapper";
 import { createSupabaseAgentRetrievalPort } from "../domain/supabaseAgentRetrievalPort";
 import { createWorkOrderDraftFromInsight, createWorkOrderEmailDraft, type WorkOrderDraft } from "../domain/workOrder";
-import type { EvidenceQuote as DomainEvidenceQuote, FocusRegionInsight, NormalizedFeedback, Region, ServiceScenario, SurveyPlatform } from "../domain/types";
+import type { EvidenceQuote as DomainEvidenceQuote, FocusRegionInsight, NormalizedFeedback, Region, ServiceScenario, SurveyPlatform, ThirdPartySurveyExport, WorkbenchScenario } from "../domain/types";
 import { PortfolioDeck } from "../portfolio/PortfolioDeck";
 import "../styles/app.css";
 
 const appAgentRetrievalPort = createSupabaseAgentRetrievalPort(import.meta.env);
 const appAgentPort = createDeepSeekAgentPort(import.meta.env, appAgentRetrievalPort);
+const qaStorageKey = "after-sales-workbench-ai-qa-state-v1";
+const importSessionStorageKey = "after-sales-workbench-import-session-v1";
+const projectArchiveStorageKey = "after-sales-workbench-archived-projects-v1";
 
 type ScreenId = "home" | "import" | "projects" | "drilldown" | "report" | "query" | "profile";
 type PrimaryNavId = "new-project" | "projects" | "dashboard" | "query" | "profile";
@@ -74,6 +80,44 @@ type ImportedProject = {
   dateRange: string;
   count: string;
 };
+
+type FieldIssue = {
+  id: string;
+  title: string;
+  count: number;
+  field: string;
+  result: string;
+  required: boolean;
+  status: "pass" | "warning" | "preview";
+  detail: string;
+  examples: string[];
+};
+
+type ImportSession = {
+  fileName: string;
+  fileKind: string;
+  importedAt: string;
+  recognitionStatus: string;
+  mappingSavedAt?: string;
+  confirmedFieldIssueIds?: string[];
+  exports: ThirdPartySurveyExport[];
+  records: NormalizedFeedback[];
+  validationSummary: ImportValidationSummary;
+  parseErrors: string[];
+  parseWarnings: string[];
+  fieldIssues: FieldIssue[];
+};
+
+type WorkbenchData = {
+  hasImportedData: boolean;
+  projects: ImportedProject[];
+  drilldownRows: string[][];
+  evidenceQuotes: Evidence[];
+  rawRecords: NormalizedFeedback[];
+  importHistoryRows: string[][];
+};
+
+type ScenarioClassifier = (record: NormalizedFeedback) => boolean;
 
 type DrilldownFilter = {
   timeRange: string;
@@ -241,89 +285,9 @@ const primaryNavItems: PrimaryNavItem[] = [
 
 const evidencePageSizeOptions: EvidencePageSize[] = [10, 20, 50, 100];
 
-const evidenceQuotes: Evidence[] = [
-  {
-    quote: "预约后到店还是等了一个多小时，接待解释不清楚，只说系统里排队。",
-    rating: "2/5",
-    nps: "3/10",
-    submittedAt: "2026-05-18 14:22",
-    source: "问卷星",
-    location: "杭州 / 西溪服务中心",
-    scenario: "到店服务",
-    reason: "低分样本，直接支撑等待时间和接待解释风险",
-    tone: "risk",
-  },
-  {
-    quote: "移动服务师傅提前联系，现场处理很快，还把后续保养注意事项讲清楚了。",
-    rating: "5/5",
-    nps: "10/10",
-    submittedAt: "2026-05-21 09:48",
-    source: "App 内问卷",
-    location: "广州 / 天河服务中心",
-    scenario: "移动服务",
-    reason: "正向样本，可作为移动服务标准动作素材",
-    tone: "pass",
-  },
-  {
-    quote: "App 预约页面显示已确认，但门店说没有同步，最后人工帮忙重新排。",
-    rating: "3/5",
-    nps: "5/10",
-    submittedAt: "2026-05-27 16:10",
-    source: "企微链接",
-    location: "成都 / 高新服务中心",
-    scenario: "App/OTA",
-    reason: "跨系统同步问题，适合进入需人工复核清单",
-    tone: "warning",
-  },
-  {
-    quote: "等候区已经坐满了，没人主动告知还要等多久，问了两次才说前面还有三台车。",
-    rating: "2/5",
-    nps: "2/10",
-    submittedAt: "2026-05-18 15:06",
-    source: "问卷星",
-    location: "杭州 / 西溪服务中心",
-    scenario: "到店服务",
-    reason: "同一服务中心的等待告知问题，可与低分样本形成问题簇",
-    tone: "risk",
-  },
-  {
-    quote: "交车时功能变化讲得比较快，回家后才发现有些设置和之前说的不一样。",
-    rating: "3/5",
-    nps: "5/10",
-    submittedAt: "2026-05-20 18:31",
-    source: "App 内问卷",
-    location: "北京 / 望京服务中心",
-    scenario: "交付说明",
-    reason: "交付解释波动样本，适合进入区域督查证据包",
-    tone: "warning",
-  },
-  {
-    quote: "维修进度中途没有更新，我只能自己打电话问，最后才知道配件还没到。",
-    rating: "2/5",
-    nps: "4/10",
-    submittedAt: "2026-05-24 11:15",
-    source: "企微链接",
-    location: "成都 / 高新服务中心",
-    scenario: "维修跟进",
-    reason: "过程同步不足样本，可支撑服务问题闭环和回访动作",
-    tone: "risk",
-  },
-];
+let evidenceQuotes: Evidence[] = [];
 
-const validationRows = [
-  ["项目名称", "已识别", "2026 五一售后服务专项", "来自文件名和项目字段"],
-  ["提交时间", "已通过", "1,240 / 1,240", "全部可解析为标准日期"],
-  ["服务评分", "已通过", "1,218 / 1,240", "22 条缺失，已进入无评分样本"],
-  ["推荐意愿", "需确认", "1,176 / 1,240", "64 条为空，不参与 NPS 计算"],
-  ["联系方式", "已脱敏", "138****2187", "手机号、姓名仅显示脱敏结果"],
-];
-
-const drilldownRows = [
-  ["华东", "杭州", "西溪服务中心", "186", "4.02", "高", "等待时间、解释不清"],
-  ["华南", "广州", "天河服务中心", "142", "4.76", "低", "移动服务响应快"],
-  ["西南", "成都", "高新服务中心", "128", "4.21", "中", "App 同步需复核"],
-  ["华北", "北京", "望京服务中心", "119", "4.35", "中", "交付解释波动"],
-];
+let drilldownRows: string[][] = [];
 
 const topicOptions = [
   { id: "等待时间", title: "等待时间", meta: "预约后到店仍长时间等待", tone: "risk" as const },
@@ -331,30 +295,26 @@ const topicOptions = [
   { id: "App 同步", title: "App 同步", meta: "预约确认后门店信息未同步", tone: "warning" as const },
   { id: "交付解释", title: "交付解释", meta: "交付后注意事项和后续动作不清晰", tone: "warning" as const },
   { id: "移动服务", title: "移动服务", meta: "上门服务、提前联系和现场处理", tone: "pass" as const },
+  { id: "活动体验", title: "活动体验", meta: "活动触达、权益说明和现场承接", tone: "warning" as const },
+  { id: "问题复发", title: "问题复发", meta: "维修后复发、未解决或需要回访", tone: "risk" as const },
+  { id: "口碑投诉", title: "口碑投诉", meta: "投诉、不满、差评和传播风险", tone: "risk" as const },
 ];
 
-const timeTrendRows = [
-  ["2026-05-01", "286", "4.42", "31", "活动首日咨询集中"],
-  ["2026-05-08", "224", "4.27", "38", "节后到店等待上升"],
-  ["2026-05-18", "196", "4.02", "52", "等待和解释问题集中"],
-  ["2026-05-31", "184", "4.36", "24", "月末回访收口"],
-];
-
-const importedProjects: ImportedProject[] = [
-  { id: "may-service", name: "五一售后服务专项", type: "售后服务", dateRange: "2026-05-01 至 2026-05-31", count: "1,240" },
-  { id: "april-monthly", name: "四月售后月报", type: "月度复盘", dateRange: "2026-04-01 至 2026-04-30", count: "1,086" },
-  { id: "energy-event", name: "补能体验活动反馈", type: "活动体验", dateRange: "2026-05-20 至 2026-05-28", count: "328" },
-];
-
-const projectComparisonRows = importedProjects.map((project, index) => [
-  project.name,
-  project.type,
-  project.dateRange,
-  `${project.count} 条`,
-  index === 0 ? "服务体验稳定，等待解释需闭环" : index === 1 ? "月报已归档，可继续追问" : "字段待确认，需完成映射",
-]);
+let importedProjects: ImportedProject[] = [];
+let currentRawRecords: NormalizedFeedback[] = [];
 
 const scenarioOutputs = ["服务问题闭环", "满意度归因", "区域城市督查端", "活动体验复盘", "口碑投诉与风险"];
+
+const scenarioClassifiers: Record<string, ScenarioClassifier> = {
+  服务问题闭环: (record) => isLowScoreRecord(record)
+    || /复发|没解决|未解决|等待|排队|解释|说明|回访|闭环|返修/.test(`${record.feedbackText} ${record.projectName} ${record.serviceScenario}`),
+  满意度归因: (record) => isNumber(record.rating) || isNumber(record.npsScore),
+  区域城市督查端: (record) => Boolean(record.region || record.city || record.serviceCenter)
+    && (isLowScoreRecord(record) || /等待|排队|解释|同步|交付|复发|投诉|不满/.test(record.feedbackText)),
+  活动体验复盘: (record) => /活动|社群|车主|权益|端午|五一/.test(`${record.projectName} ${record.serviceScenario} ${record.feedbackText}`),
+  口碑投诉与风险: (record) => isLowScoreRecord(record)
+    || /投诉|口碑|差评|风险|不满|失望|没解决|复发/.test(`${record.feedbackText} ${record.projectName}`),
+};
 
 const scenarioReports: Record<
   string,
@@ -369,8 +329,8 @@ const scenarioReports: Record<
   服务问题闭环: {
     headline: "等待时间和接待解释是本期低分闭环的优先对象",
     summary:
-      "低分样本主要集中在到店等待、接待解释不清和异常排队三个环节。建议先锁定杭州西溪服务中心，形成预约确认、到店排队、异常解释、回访确认四步闭环。",
-    bullets: ["杭州西溪服务中心 186 条反馈中，等待与解释问题占比最高。", "低分反馈需要按是否可回访、是否需补偿、是否需流程整改拆分。", "闭环动作应沉淀为服务中心日清单，而不是只写进月报。"],
+      "围绕当前筛选范围内的低分、复发、等待和解释样本生成闭环判断，服务中心和样本量由上传数据实时决定。",
+    bullets: ["按当前范围识别等待、解释、复发和回访相关样本。", "低分反馈需要按是否可回访、是否需补偿、是否需流程整改拆分。", "闭环动作应沉淀为服务中心日清单，而不是只写进月报。"],
     modules: [
       { title: "低分样本分组", text: "按等待、解释、交付复发、系统同步拆分责任对象。" },
       { title: "回访优先级", text: "优先处理评分 2 分以下、NPS 3 分以下且留资样本。" },
@@ -382,8 +342,8 @@ const scenarioReports: Record<
   满意度归因: {
     headline: "评分下滑不是单一服务问题，而是等待体验放大了解释压力",
     summary:
-      "本期平均服务评分 4.31，较上期下降 0.18。满意度波动主要由等待时间、解释不清和 App 预约同步共同造成，正向样本集中在移动服务响应快和现场解释清楚。",
-    bullets: ["评分下降样本集中在华东和西南两个区域。", "NPS 贬损者多提到等待和系统排队，推荐者多提到主动联系。", "满意度归因需要同时看评分、NPS、原话主因和服务中心分布。"],
+      "根据当前范围内的评分、推荐意愿和反馈原文生成归因判断，正负向样本由上传数据计算。",
+    bullets: ["评分和推荐意愿会随当前筛选范围重新计算。", "NPS 贬损者和推荐者的主因从本次命中原文中提取。", "满意度归因需要同时看评分、NPS、原话主因和服务中心分布。"],
     modules: [
       { title: "评分归因", text: "拆分服务评分、NPS、低分反馈和主因文本。" },
       { title: "推荐者画像", text: "提炼移动服务正向动作，作为区域复制样本。" },
@@ -395,8 +355,8 @@ const scenarioReports: Record<
   区域城市督查端: {
     headline: "督查重点应落在服务中心，而不是只停留在区域均值",
     summary:
-      "区域均值会掩盖服务中心差异。当前建议将杭州西溪、成都高新、北京望京列为督查对象，分别看等待解释、App 同步和交付解释波动。",
-    bullets: ["华东低分集中在杭州西溪服务中心，主因是等待和解释不清。", "西南需关注成都高新服务中心的 App 预约同步异常。", "华北北京望京服务中心存在交付解释波动，需要抽样复核。"],
+      "区域均值会掩盖服务中心差异。督查对象必须从当前筛选范围的城市和服务中心数据中生成。",
+    bullets: ["按当前范围比较区域、城市和服务中心的反馈量与低分比例。", "督查对象从上传数据中的异常服务中心产生。", "需要把问题落到具体门店、具体环节和复核动作。"],
     modules: [
       { title: "区域排序", text: "按评分、反馈量、风险等级筛出异常区域。" },
       { title: "城市定位", text: "比较城市内不同服务中心的表现差异。" },
@@ -433,19 +393,11 @@ const scenarioReports: Record<
   },
 };
 
-const queryThreads: QaThread[] = [
-  { id: "hangzhou-risk", title: "杭州西溪服务中心低分原因", meta: "12 条证据 / 3 轮查询" },
-  { id: "field-service-good", title: "移动服务正向案例提炼", meta: "8 条证据 / 2 轮查询" },
-  { id: "app-sync", title: "App 预约同步异常", meta: "5 条证据 / 1 轮查询" },
-];
+const queryThreads: QaThread[] = [];
 
-const qaProjects = importedProjects;
+let qaProjects = importedProjects;
 
-const importHistory = [
-  ["五一售后服务专项_2026-05.csv", "2026-06-01 09:32", "已导入", "1,240"],
-  ["四月售后月报_2026-04.csv", "2026-05-02 10:18", "已导入", "1,086"],
-  ["补能体验活动反馈.csv", "2026-05-28 17:45", "需配置", "328"],
-];
+let importHistory: string[][] = [];
 
 const defaultTimePeriodValues: Record<string, string> = {
   全部时间: "",
@@ -470,11 +422,361 @@ const defaultDrilldownFilter: DrilldownFilter = {
   selectedTopics: [],
 };
 
+function buildDefaultFilterForRecords(records: NormalizedFeedback[]): DrilldownFilter {
+  const dates = records
+    .map((record) => record.submittedAt.slice(0, 10))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .sort();
+  if (!dates.length) return defaultDrilldownFilter;
+  const start = dates[0];
+  const end = dates.at(-1) ?? start;
+  return {
+    ...defaultDrilldownFilter,
+    timeRange: "全部时间",
+    timePeriod: "",
+    customStartDate: start,
+    customEndDate: end,
+    customTimeRange: `${start} 至 ${end}`,
+  };
+}
+
+function buildDefaultTimePeriodValue(timeRange: string, records: NormalizedFeedback[]): string {
+  const dates = records
+    .map((record) => record.submittedAt.slice(0, 10))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .sort();
+  const latest = dates.at(-1);
+  if (!latest) return "";
+  if (timeRange === "日") return latest;
+  if (timeRange === "月") return latest.slice(0, 7);
+  if (timeRange === "年") return latest.slice(0, 4);
+  if (timeRange === "季度") {
+    const month = Number(latest.slice(5, 7));
+    const quarter = Math.max(1, Math.ceil(month / 3));
+    return `${latest.slice(0, 4)}-Q${quarter}`;
+  }
+  if (timeRange === "周") return dateToWeekInputValue(latest);
+  return "";
+}
+
+function dateToWeekInputValue(dateValue: string): string {
+  const date = new Date(`${dateValue}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return "";
+  const day = date.getUTCDay() || 7;
+  const thursday = new Date(date);
+  thursday.setUTCDate(date.getUTCDate() + 4 - day);
+  const year = thursday.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(year, 0, 1));
+  const week = Math.ceil((((thursday.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
+const demoWorkbenchData: WorkbenchData = {
+  hasImportedData: false,
+  projects: [],
+  drilldownRows: [],
+  evidenceQuotes: [],
+  rawRecords: [],
+  importHistoryRows: [],
+};
+
+function applyWorkbenchData(data: WorkbenchData) {
+  importedProjects = data.projects;
+  qaProjects = importedProjects;
+  drilldownRows = data.drilldownRows;
+  evidenceQuotes = data.evidenceQuotes;
+  currentRawRecords = data.rawRecords;
+  importHistory = data.importHistoryRows;
+}
+
+function buildImportSessionFromExports(
+  fileName: string,
+  exports: ThirdPartySurveyExport[],
+  parseErrors: string[],
+  parseWarnings: string[],
+): ImportSession {
+  const records = exports.flatMap(mapSurveyExportToFeedback);
+  const validationSummary = buildImportValidationSummary(exports);
+
+  return {
+    fileName,
+    fileKind: fileName.toLowerCase().endsWith(".csv") ? "CSV" : "Excel",
+    importedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+    recognitionStatus: parseErrors.length ? "需处理错误" : records.length ? "已识别" : "未识别到数据",
+    exports,
+    records,
+    validationSummary,
+    parseErrors,
+    parseWarnings,
+    fieldIssues: buildFieldIssues(records),
+  };
+}
+
+function loadPersistedImportSession(): ImportSession | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(importSessionStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ImportSession;
+    if (!parsed || !Array.isArray(parsed.records) || !Array.isArray(parsed.exports)) return null;
+    const validationSummary = buildImportValidationSummary(parsed.exports);
+    return {
+      ...parsed,
+      mappingSavedAt: typeof parsed.mappingSavedAt === "string" ? parsed.mappingSavedAt : undefined,
+      confirmedFieldIssueIds: Array.isArray(parsed.confirmedFieldIssueIds)
+        ? parsed.confirmedFieldIssueIds.filter((item): item is string => typeof item === "string")
+        : [],
+      validationSummary,
+      fieldIssues: buildFieldIssues(parsed.records),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistImportSession(session: ImportSession | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (!session) {
+      window.localStorage.removeItem(importSessionStorageKey);
+      return;
+    }
+    window.localStorage.setItem(importSessionStorageKey, JSON.stringify(session));
+  } catch {
+    // A failed local save should not block the active import session.
+  }
+}
+
+function buildWorkbenchData(session: ImportSession | null): WorkbenchData {
+  if (!session || session.records.length === 0) return demoWorkbenchData;
+
+  return {
+    hasImportedData: true,
+    projects: buildImportedProjectsFromRecords(session.records),
+    drilldownRows: buildDrilldownRowsFromRecords(session.records),
+    evidenceQuotes: buildEvidenceQuotesFromRecords(session.records),
+    rawRecords: session.records,
+    importHistoryRows: [
+      [session.fileName, session.importedAt, session.parseErrors.length ? "需处理" : "已导入", String(session.records.length)],
+    ],
+  };
+}
+
+function buildImportedProjectsFromRecords(records: NormalizedFeedback[]): ImportedProject[] {
+  const groups = groupBy(records, (record) => record.projectName || "未命名项目");
+  return Array.from(groups.entries()).map(([name, items], index) => ({
+    id: createStableId(name, index),
+    name,
+    type: inferImportedProjectType(name, items),
+    dateRange: formatRecordDateRange(items),
+    count: String(items.length),
+  }));
+}
+
+function buildDrilldownRowsFromRecords(records: NormalizedFeedback[]): string[][] {
+  const groups = groupBy(records, (record) =>
+    [
+      record.region ?? "未标注",
+      record.city || "未标注城市",
+      record.serviceCenter || "未标注服务中心",
+    ].join("||"),
+  );
+
+  return Array.from(groups.entries())
+    .map(([key, items]) => {
+      const [region, city, serviceCenter] = key.split("||");
+      const averageRating = average(items.map((record) => record.rating).filter(isNumber));
+      const lowCount = items.filter(isLowScoreRecord).length;
+      const lowRatio = lowCount / Math.max(items.length, 1);
+      const risk = lowRatio >= 0.3 || averageRating < 3.5 ? "高" : lowRatio >= 0.15 || averageRating < 4.2 ? "中" : "低";
+      const reason = inferRecordTopics(items).slice(0, 3).join("、") || "常规反馈";
+      return [region, city, serviceCenter, String(items.length), averageRating.toFixed(2), risk, reason];
+    })
+    .sort((a, b) => a[0].localeCompare(b[0], "zh-CN") || a[1].localeCompare(b[1], "zh-CN") || a[2].localeCompare(b[2], "zh-CN"));
+}
+
+function buildEvidenceQuotesFromRecords(records: NormalizedFeedback[]): Evidence[] {
+  const sorted = [...records].sort((a, b) => {
+    const riskDelta = riskWeight(b) - riskWeight(a);
+    if (riskDelta !== 0) return riskDelta;
+    return a.submittedAt.localeCompare(b.submittedAt);
+  });
+
+  return sorted.slice(0, Math.min(80, sorted.length)).map((record) => ({
+    quote: record.feedbackText,
+    rating: typeof record.rating === "number" ? `${record.rating}/5` : "-",
+    nps: typeof record.npsScore === "number" ? `${record.npsScore}/10` : "-",
+    submittedAt: formatDisplayDateTime(record.submittedAt),
+    source: record.sourceLabel,
+    location: `${record.city ?? "未标注城市"} / ${record.serviceCenter ?? "未标注服务中心"}`,
+    scenario: record.serviceScenario,
+    reason: `来自上传数据：${inferRecordTopics([record]).join("、") || "常规反馈"}`,
+    tone: isLowScoreRecord(record) ? "risk" : (record.rating ?? 0) >= 4 || (record.npsScore ?? 0) >= 9 ? "pass" : "warning",
+  }));
+}
+
+function buildFieldIssues(records: NormalizedFeedback[]): FieldIssue[] {
+  const missingNps = records.filter((record) => !isNumber(record.npsScore));
+  const missingRating = records.filter((record) => !isNumber(record.rating));
+  const missingText = records.filter((record) => !record.feedbackText.trim());
+
+  return [
+    buildFieldIssue({
+      id: "nps-score",
+      title: missingNps.length ? "推荐意愿缺失" : "推荐意愿完整",
+      count: missingNps.length,
+      field: "推荐意愿评分 / nps_score",
+      result: missingNps.length ? "缺失样本不参与 NPS 计算，但保留原文和评分" : "全部样本可参与 NPS 覆盖判断",
+      required: missingNps.length > 0,
+      status: missingNps.length > 0 ? "warning" : "pass",
+      detail: missingNps.length ? "这些行缺少推荐意愿评分，需要确认是否允许继续导入。" : "未发现推荐意愿评分缺失。",
+      records: missingNps.length ? missingNps : records.slice(0, 3),
+    }),
+    buildFieldIssue({
+      id: "service-rating",
+      title: missingRating.length ? "服务评分缺失" : "服务评分完整",
+      count: missingRating.length,
+      field: "服务评分 / service_score",
+      result: missingRating.length ? "进入无评分样本，报告中单独标记" : "全部样本可参与服务评分计算",
+      required: missingRating.length > 0,
+      status: missingRating.length > 0 ? "warning" : "pass",
+      detail: missingRating.length ? "这些行缺少服务评分，需要确认是否用 NPS 或原文补充判断。" : "未发现服务评分缺失。",
+      records: missingRating.length ? missingRating : records.slice(0, 3),
+    }),
+    buildFieldIssue({
+      id: "feedback-text",
+      title: missingText.length ? "反馈原文缺失" : "反馈原文字段预览",
+      count: missingText.length,
+      field: "开放反馈原话 / feedback_text",
+      result: missingText.length ? "缺失原文的样本不可进入引用证据" : "原文池可分页查看，不放入初始复盘正文",
+      required: missingText.length > 0,
+      status: missingText.length > 0 ? "warning" : "preview",
+      detail: missingText.length ? "这些行缺少开放反馈原话。" : "抽样展示原文字段，确认引用证据来自上传表。",
+      records: missingText.length ? missingText : records.slice(0, 3),
+    }),
+  ];
+}
+
+function buildFieldIssue(input: {
+  id: string;
+  title: string;
+  count: number;
+  field: string;
+  result: string;
+  required: boolean;
+  status: FieldIssue["status"];
+  detail: string;
+  records: NormalizedFeedback[];
+}): FieldIssue {
+  return {
+    id: input.id,
+    title: input.title,
+    count: input.count,
+    field: input.field,
+    result: input.result,
+    required: input.required,
+    status: input.status,
+    detail: input.detail,
+    examples: input.records.slice(0, 3).map((record, index) =>
+      `样例 ${index + 1}：${record.projectName} / ${record.city ?? "未标注城市"} / ${record.serviceCenter ?? "未标注服务中心"} / ${record.feedbackText.slice(0, 42)}`,
+    ),
+  };
+}
+
+function validationRowsFromSession(session: ImportSession | null): string[][] {
+  if (!session) return [];
+  return session.validationSummary.items.map((item) => [
+    item.label,
+    item.status === "pass" ? "已通过" : item.status === "warning" ? "需确认" : "错误",
+    item.metric,
+    item.detail,
+  ]);
+}
+
+function groupBy<T>(items: T[], keyBuilder: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyBuilder(item);
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  return groups;
+}
+
+function createStableId(name: string, index: number): string {
+  const ascii = name
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .toLowerCase();
+  return ascii || `project-${index + 1}`;
+}
+
+function inferImportedProjectType(name: string, records: NormalizedFeedback[]): string {
+  if (name.includes("活动")) return "活动体验";
+  if (name.includes("月报") || name.includes("复盘")) return "月度复盘";
+  if (name.includes("App")) return "App 触点反馈";
+  if (name.includes("补能")) return "补能体验";
+  if (name.includes("回访")) return "服务回访";
+  const topics = inferRecordTopics(records);
+  return topics[0] ? `${topics[0]}专项` : "售后服务";
+}
+
+function formatRecordDateRange(records: NormalizedFeedback[]): string {
+  const dates = records.map((record) => record.submittedAt.slice(0, 10)).filter(Boolean).sort();
+  return dates.length ? `${dates[0]} 至 ${dates.at(-1)}` : "未识别";
+}
+
+function inferRecordTopics(records: NormalizedFeedback[]): string[] {
+  const scores = new Map<string, number>();
+  const add = (topic: string, weight = 1) => scores.set(topic, (scores.get(topic) ?? 0) + weight);
+
+  for (const record of records) {
+    const text = `${record.feedbackText} ${record.serviceScenario} ${record.projectName}`;
+    if (/等|排队|等待|耗时|到店/.test(text)) add("等待时间");
+    if (/解释|说明|告知|口径|权益/.test(text)) add("解释不清");
+    if (/App|预约|同步|系统|页面/.test(text)) add("App 同步");
+    if (/交付|交车|取车|维修|配件|返修|复发/.test(text)) add("交付解释");
+    if (/复发|没解决|未解决|返修|闭环|回访/.test(text)) add("问题复发");
+    if (/移动|上门|师傅/.test(text)) add("移动服务");
+    if (/活动|社群|车主|权益|端午|五一/.test(text)) add("活动体验");
+    if (/投诉|口碑|差评|风险|不满|失望|低分/.test(text) || isLowScoreRecord(record)) add("口碑投诉");
+    if (/补能|充电|超充/.test(text)) add("补能体验");
+  }
+
+  return Array.from(scores.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-CN"))
+    .map(([topic]) => topic);
+}
+
+function isLowScoreRecord(record: NormalizedFeedback): boolean {
+  return (record.rating ?? 5) <= 2 || (record.npsScore ?? 10) <= 6;
+}
+
+function riskWeight(record: NormalizedFeedback): number {
+  if (isLowScoreRecord(record)) return 3;
+  if ((record.rating ?? 5) <= 3 || (record.npsScore ?? 10) <= 8) return 2;
+  return 1;
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function formatDisplayDateTime(value: string): string {
+  return value.replace("T", " ").replace(/\+08:00$/, "").replace(/\+00:00$/, "");
+}
+
 const secondaryPanelCopy: Record<string, { title: string; text: string; metrics: string[] }> = {
   "new-upload": {
     title: "上传反馈数据",
     text: "把问卷星、腾讯问卷、App 问卷或短信链接导出的 Excel / CSV 放入当前批次，系统会先识别项目、时间和样本量。",
-    metrics: ["支持 Excel / CSV", "最近文件 3 个", "本批 1,240 行"],
+    metrics: ["支持 Excel / CSV", "上传后识别样本量", "未上传时为空"],
   },
   "new-mapping": {
     title: "字段映射",
@@ -484,7 +786,7 @@ const secondaryPanelCopy: Record<string, { title: string; text: string; metrics:
   "new-validation": {
     title: "导入校验",
     text: "检查缺失、重复、隐私字段和指标覆盖率。推荐意愿缺失样本不会进入 NPS 计算，但保留在原文池中。",
-    metrics: ["缺失样本 64 条", "隐私字段已脱敏", "可进入复盘"],
+    metrics: ["按上传文件校验", "隐私字段脱敏", "通过后进入复盘"],
   },
   "new-report": {
     title: "生成初始复盘",
@@ -494,22 +796,22 @@ const secondaryPanelCopy: Record<string, { title: string; text: string; metrics:
   "new-history": {
     title: "导入历史",
     text: "查看最近导入文件、处理结果和需要继续配置的批次，方便追踪同一项目的多次补充导入。",
-    metrics: ["已导入 2 批", "需配置 1 批", "累计 2,654 条"],
+    metrics: ["按本机导入记录显示", "可继续处理", "无记录显示空态"],
   },
   "projects-all": {
     title: "全部项目",
     text: "展示所有已经导入的业务项目，包含项目类型、时间范围、反馈量、报告状态和最近处理结果。",
-    metrics: ["项目 3 个", "累计反馈 2,654 条", "报告 2 份"],
+    metrics: ["按导入项目显示", "反馈量实时汇总", "无项目显示空态"],
   },
   "projects-recent": {
     title: "最近项目",
     text: "聚合最近 30 天打开或导入的项目，适合快速回到正在复盘的售后专项、月报或活动反馈。",
-    metrics: ["最近打开 3 个", "待配置 1 个", "可继续复盘"],
+    metrics: ["按导入时间排序", "低分可优先", "无项目显示空态"],
   },
   "projects-detail": {
     title: "项目详情",
     text: "查看单个项目的时间范围、来源渠道、服务中心覆盖、报告状态和下一步可进入的分析入口。",
-    metrics: ["来源 3 类", "样本 1,240 条", "状态已生成"],
+    metrics: ["来源来自导入表", "样本量随项目变化", "状态随数据生成"],
   },
   "projects-batches": {
     title: "导入批次",
@@ -583,224 +885,6 @@ const secondaryPanelCopy: Record<string, { title: string; text: string; metrics:
   },
 };
 
-const secondaryWorkspaceCopy: Record<string, {
-  eyebrow: string;
-  title: string;
-  summary: string;
-  items: Array<{ title: string; text: string; status: string; tone: StatusTone }>;
-  action: string;
-}> = {
-  "new-upload": {
-    eyebrow: "上传反馈数据",
-    title: "导入入口与文件准备",
-    summary: "把本次售后反馈表放入当前批次，先确认文件来源、格式和样本量。",
-    items: [
-      { title: "文件入口", text: "支持 Excel / CSV；上传后进入字段识别。", status: "可操作", tone: "pass" },
-      { title: "标准模板", text: "模板包含项目、时间、评分、NPS、原话和服务中心字段。", status: "可下载", tone: "neutral" },
-      { title: "批次识别", text: "当前批次识别为五一售后服务专项。", status: "已识别", tone: "pass" },
-    ],
-    action: "上传文件",
-  },
-  "new-mapping": {
-    eyebrow: "字段映射",
-    title: "确认字段映射关系",
-    summary: "把导入字段映射到报告所需口径，避免后续筛选和指标计算跑偏。",
-    items: [
-      { title: "时间字段", text: "提交时间已匹配，可用于日、周、月、季度、年筛选。", status: "已通过", tone: "pass" },
-      { title: "项目字段", text: "项目名称、项目类型和反馈量已识别。", status: "已通过", tone: "pass" },
-      { title: "推荐意愿", text: "64 条为空，不参与 NPS 计算。", status: "需确认", tone: "warning" },
-    ],
-    action: "保存映射",
-  },
-  "new-validation": {
-    eyebrow: "导入校验",
-    title: "检查数据质量和隐私字段",
-    summary: "先判断这批数据能否进入复盘，再处理缺失、重复和隐私问题。",
-    items: [
-      { title: "必填字段", text: "项目、时间、评分、原话字段满足复盘要求。", status: "已通过", tone: "pass" },
-      { title: "指标覆盖", text: "服务评分覆盖 98.2%，推荐意愿覆盖 94.8%。", status: "可复盘", tone: "pass" },
-      { title: "敏感信息", text: "手机号、姓名、车牌和 VIN 默认脱敏。", status: "已脱敏", tone: "pass" },
-    ],
-    action: "确认校验",
-  },
-  "new-report": {
-    eyebrow: "生成初始复盘",
-    title: "生成默认总复盘报告",
-    summary: "校验完成后生成初始总报告，给运营一个可复制的整体判断。",
-    items: [
-      { title: "总复盘", text: "生成整体体验判断、指标变化和主要问题。", status: "已就绪", tone: "pass" },
-      { title: "专项入口", text: "服务闭环、满意度归因、区域督查等专项可继续生成。", status: "5 个专项", tone: "neutral" },
-      { title: "证据链", text: "每个结论都保留可追溯反馈原文。", status: "可追溯", tone: "pass" },
-    ],
-    action: "生成报告",
-  },
-  "new-history": {
-    eyebrow: "导入历史",
-    title: "导入批次与历史记录",
-    summary: "查看最近文件、处理状态和需要继续配置的批次。",
-    items: [
-      { title: "五一售后服务专项", text: "2026-06-01 导入，1,240 行。", status: "已导入", tone: "pass" },
-      { title: "四月售后月报", text: "2026-05-02 导入，1,086 行。", status: "已导入", tone: "pass" },
-      { title: "补能体验活动反馈", text: "2026-05-28 导入，328 行。", status: "需配置", tone: "warning" },
-    ],
-    action: "查看批次",
-  },
-  "projects-all": {
-    eyebrow: "全部项目",
-    title: "所有已导入项目",
-    summary: "查看所有业务项目、项目类型、时间范围、反馈量和报告状态。",
-    items: [
-      { title: "五一售后服务专项", text: "售后服务 / 2026-05 / 1,240 条反馈。", status: "已生成", tone: "pass" },
-      { title: "四月售后月报", text: "月度复盘 / 2026-04 / 1,086 条反馈。", status: "已归档", tone: "neutral" },
-      { title: "补能体验活动反馈", text: "活动体验 / 328 条反馈。", status: "需配置", tone: "warning" },
-    ],
-    action: "选择项目",
-  },
-  "projects-recent": {
-    eyebrow: "最近项目",
-    title: "最近打开与最近导入",
-    summary: "把最近正在处理的项目放在前面，方便运营继续复盘。",
-    items: [
-      { title: "最近打开", text: "五一售后服务专项刚刚进入报告仪表盘。", status: "当前", tone: "pass" },
-      { title: "最近导入", text: "补能体验活动反馈仍需确认字段。", status: "需配置", tone: "warning" },
-      { title: "最近归档", text: "四月售后月报保留报告和问答记录。", status: "已归档", tone: "neutral" },
-    ],
-    action: "继续处理",
-  },
-  "projects-detail": {
-    eyebrow: "项目详情",
-    title: "项目范围、样本和报告状态",
-    summary: "选中项目后查看来源渠道、覆盖区域、服务中心和下一步入口。",
-    items: [
-      { title: "来源渠道", text: "问卷星、App 内问卷、企微链接。", status: "3 类", tone: "neutral" },
-      { title: "覆盖范围", text: "7 个区域、42 个服务中心。", status: "完整", tone: "pass" },
-      { title: "报告状态", text: "总复盘已生成，专项可继续切换。", status: "可查看", tone: "pass" },
-    ],
-    action: "打开详情",
-  },
-  "projects-batches": {
-    eyebrow: "导入批次",
-    title: "导入批次和文件记录",
-    summary: "按文件批次核对导入时间、处理状态和样本量。",
-    items: [
-      { title: "主批次", text: "五一售后服务专项_2026-05.csv。", status: "已导入", tone: "pass" },
-      { title: "历史批次", text: "四月售后月报_2026-04.csv。", status: "已导入", tone: "pass" },
-      { title: "待配置批次", text: "补能体验活动反馈.csv。", status: "需配置", tone: "warning" },
-    ],
-    action: "核对批次",
-  },
-  "projects-archive": {
-    eyebrow: "归档项目",
-    title: "归档项目与恢复入口",
-    summary: "查看已完成项目，保留报告和问答记录，但不进入默认范围。",
-    items: [
-      { title: "四月售后月报", text: "月报已完成，可恢复到报告仪表盘查看。", status: "已归档", tone: "neutral" },
-      { title: "问答记录", text: "历史查询保留，星标状态可继续查看。", status: "保留", tone: "pass" },
-      { title: "数据范围", text: "归档项目不会影响默认当前范围。", status: "隔离", tone: "pass" },
-    ],
-    action: "恢复项目",
-  },
-  "dashboard-overview": {
-    eyebrow: "总览",
-    title: "当前范围和核心指标",
-    summary: "先看当前范围、核心指标和风险对象，再决定是否进入报告或 AI 问答。",
-    items: [
-      { title: "当前范围", text: "全部时间 / 全部项目 / 全国。", status: "默认", tone: "neutral" },
-      { title: "核心指标", text: "反馈量、评分、NPS、低分反馈随筛选更新。", status: "已更新", tone: "pass" },
-      { title: "风险对象", text: "杭州西溪、成都高新、北京望京。", status: "3 个", tone: "warning" },
-    ],
-    action: "查看总览",
-  },
-  "dashboard-time": {
-    eyebrow: "时间维度",
-    title: "按时间粒度筛选当前反馈",
-    summary: "日、周、月、季度、年和自定义时间段选择后立即应用到当前范围。",
-    items: [
-      { title: "日 / 周 / 月", text: "适合看短周期趋势和月度复盘。", status: "可切换", tone: "pass" },
-      { title: "季度 / 年", text: "适合经营会和跨期比较。", status: "可切换", tone: "pass" },
-      { title: "自定义", text: "可选择 2026-05 的三个自定义时间段。", status: "可选择", tone: "pass" },
-    ],
-    action: "切换时间",
-  },
-  "dashboard-project": {
-    eyebrow: "项目维度",
-    title: "按项目范围筛选和比较",
-    summary: "支持全部项目、单项目、多项目比较，每个项目展示类型、时间和反馈量。",
-    items: [
-      { title: "全部项目", text: "默认展示累计 2,654 条反馈。", status: "默认", tone: "neutral" },
-      { title: "单项目", text: "再次点击项目可取消选择。", status: "可反选", tone: "pass" },
-      { title: "多项目", text: "可同时选择售后服务、月报、活动反馈。", status: "可多选", tone: "pass" },
-    ],
-    action: "选择项目",
-  },
-  "dashboard-area": {
-    eyebrow: "区域维度",
-    title: "区域、城市、服务中心联动筛选",
-    summary: "区域是城市父级，城市是服务中心父级，切换上级会清理不合法下级。",
-    items: [
-      { title: "区域", text: "先选择华东、华南、西南或华北。", status: "父级", tone: "neutral" },
-      { title: "城市", text: "未选区域时禁用，选区域后显示对应城市。", status: "联动", tone: "pass" },
-      { title: "服务中心", text: "未选城市时禁用，选中后立即应用。", status: "即应用", tone: "pass" },
-    ],
-    action: "筛选区域",
-  },
-  "dashboard-topic": {
-    eyebrow: "问题主题",
-    title: "按问题主题查看风险对象",
-    summary: "围绕等待、解释、同步、交付等主题查看风险对象和主因。",
-    items: [
-      { title: "等待时间", text: "集中在杭州西溪服务中心。", status: "高风险", tone: "risk" },
-      { title: "解释不清", text: "影响低分和投诉风险。", status: "需闭环", tone: "warning" },
-      { title: "App 同步", text: "成都高新服务中心需复核。", status: "需复核", tone: "warning" },
-    ],
-    action: "查看主题",
-  },
-  "profile-settings": {
-    eyebrow: "个人设置",
-    title: "个人设置与默认偏好",
-    summary: "管理角色、默认区域、默认进入页面和个人偏好。",
-    items: [
-      { title: "角色", text: "区域运营主管 / 华东大区。", status: "已设置", tone: "pass" },
-      { title: "默认范围", text: "默认进入最近项目和报告仪表盘。", status: "可编辑", tone: "neutral" },
-      { title: "通知偏好", text: "导入完成和报告生成后提醒。", status: "开启", tone: "pass" },
-    ],
-    action: "编辑设置",
-  },
-  "profile-account": {
-    eyebrow: "账号状态",
-    title: "账号状态与权限审批",
-    summary: "查看账号、席位、导入权限和导出审批状态。",
-    items: [
-      { title: "账号状态", text: "当前账号正常，可使用工作台。", status: "正常", tone: "pass" },
-      { title: "导入权限", text: "可导入售后反馈 Excel / CSV。", status: "已开启", tone: "pass" },
-      { title: "导出权限", text: "报告导出需要审批。", status: "需审批", tone: "warning" },
-    ],
-    action: "申请权限",
-  },
-  "profile-privacy": {
-    eyebrow: "隐私设置",
-    title: "隐私设置与数据清理",
-    summary: "管理敏感字段脱敏、问答记录清理和导出边界。",
-    items: [
-      { title: "默认脱敏", text: "手机号、姓名、车牌、VIN 默认脱敏。", status: "开启", tone: "pass" },
-      { title: "问答记录", text: "可清理个人问答历史。", status: "可清理", tone: "neutral" },
-      { title: "导出边界", text: "导出前只显示授权范围内的数据。", status: "受控", tone: "pass" },
-    ],
-    action: "管理隐私",
-  },
-  "profile-data": {
-    eyebrow: "数据权限",
-    title: "数据权限与授权范围",
-    summary: "查看区域级、项目级和导入权限。",
-    items: [
-      { title: "区域权限", text: "当前为华东大区区域级权限。", status: "区域级", tone: "pass" },
-      { title: "项目权限", text: "可查看已授权项目和归档项目。", status: "已授权", tone: "pass" },
-      { title: "默认范围", text: "默认进入全部项目和全部区域。", status: "全部", tone: "pass" },
-    ],
-    action: "查看授权",
-  },
-};
-
 export function App() {
   const viewMode = typeof window === "undefined" ? "workbench" : getAppViewMode(window.location.search);
   return viewMode === "portfolio" ? <PortfolioDeck /> : <WorkbenchApp />;
@@ -819,6 +903,9 @@ function WorkbenchApp() {
   const [appliedFilter, setAppliedFilter] = useState<DrilldownFilter>(defaultDrilldownFilter);
   const [qaScopeMode, setQaScopeMode] = useState<QaScopeMode>("free");
   const [pendingQaQuestion, setPendingQaQuestion] = useState("");
+  const [importSession, setImportSession] = useState<ImportSession | null>(() => loadPersistedImportSession());
+  const workbenchData = useMemo(() => buildWorkbenchData(importSession), [importSession]);
+  applyWorkbenchData(workbenchData);
   const activeMeta = screenMeta[activeScreen];
   const activePrimary = useMemo(
     () => activePrimaryId ? primaryNavItems.find((item) => item.id === activePrimaryId) ?? null : null,
@@ -829,6 +916,17 @@ function WorkbenchApp() {
     [activePrimary, activeSecondaryId],
   );
   const notify = (message: string) => setNotice(message);
+  const handleImportSessionChange = (session: ImportSession) => {
+    setImportSession(session);
+    persistImportSession(session);
+    setAppliedFilter(buildDefaultFilterForRecords(session.records));
+    notify(`已导入「${session.fileName}」：${session.records.length.toLocaleString()} 条反馈，${session.fieldIssues.filter((issue) => issue.required).length} 项需确认`);
+  };
+  const handleImportSessionUpdate = (session: ImportSession, message: string) => {
+    setImportSession(session);
+    persistImportSession(session);
+    notify(message);
+  };
   const openPrimaryPreview = () => {
     if (previewCloseTimer) window.clearTimeout(previewCloseTimer);
     setPreviewCloseTimer(null);
@@ -929,10 +1027,14 @@ function WorkbenchApp() {
         <main className="screen-shell">
           <ScreenHeading activeMeta={activeMeta} primaryTitle={activePrimary?.title ?? "工作台"} secondaryTitle={activeSecondary?.title ?? "首页"} />
           {notice ? <ActionNotice message={notice} /> : null}
-          {activeScreen === "home" ? <HomeScreen onOpenScreen={openScreen} /> : null}
+          {activeScreen === "home" ? <HomeScreen importSession={importSession} workbenchData={workbenchData} onOpenScreen={openScreen} /> : null}
           {activeScreen === "import" ? (
             <ImportScreen
               activeSecondaryId={activeSecondary?.id ?? "new-upload"}
+              importSession={importSession}
+              workbenchData={workbenchData}
+              onImportSessionChange={handleImportSessionChange}
+              onImportSessionUpdate={handleImportSessionUpdate}
               onAction={notify}
               onOpenScreen={openScreen}
               onOpenInitialReport={openInitialReportOutput}
@@ -1022,11 +1124,14 @@ function Header({ appliedFilter, onAction }: { appliedFilter: DrilldownFilter; o
     return `售后复盘工作台\n${stats}\n当前结论：服务体验整体稳定，等待与解释问题需要优先闭环。`;
   };
 
-  const copySummary = () => {
+  const copySummary = async () => {
     const text = buildSummaryText();
-    const writePromise = navigator.clipboard?.writeText(text);
-    if (writePromise) void writePromise.catch(() => undefined);
-    onAction("已复制当前页面摘要，可粘贴到周报或会议纪要");
+    try {
+      await navigator.clipboard?.writeText(text);
+      onAction("已复制当前页面摘要，可粘贴到周报或会议纪要");
+    } catch {
+      onAction("复制失败，请检查浏览器剪贴板权限");
+    }
   };
 
   const exportReport = () => {
@@ -1039,7 +1144,9 @@ function Header({ appliedFilter, onAction }: { appliedFilter: DrilldownFilter; o
       ...buildScopeMetricCards(appliedFilter).map((metric) => `- ${metric.label}：${metric.value}（${metric.helper}）`),
       "",
       "## 重点证据",
-      ...evidenceQuotes.map((item, index) => `${index + 1}. ${item.quote}（${item.location}，${item.rating}，${item.nps}）`),
+      ...(evidenceQuotes.length
+        ? evidenceQuotes.map((item, index) => `${index + 1}. ${item.quote}（${item.location}，${item.rating}，${item.nps}）`)
+        : ["当前尚未导入反馈数据。"]),
     ].join("\n");
     const blob = new Blob([report], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1257,10 +1364,39 @@ function ScreenHeading({
 }
 
 function HomeScreen({
+  importSession,
+  workbenchData,
   onOpenScreen,
 }: {
+  importSession: ImportSession | null;
+  workbenchData: WorkbenchData;
   onOpenScreen: (screen: ScreenId, secondaryId?: string, primaryId?: PrimaryNavId) => void;
 }) {
+  const hasImportedData = Boolean(importSession);
+  const projectCount = hasImportedData ? workbenchData.projects.length : 0;
+  const totalRecords = importSession?.records.length ?? 0;
+  const requiredIssueCount = importSession?.fieldIssues.filter((issue) => issue.required).length ?? 0;
+  const homeCards = hasImportedData
+    ? [
+        {
+          screen: "import" as const,
+          secondary: requiredIssueCount ? "new-mapping" : "new-validation",
+          primary: "new-project" as const,
+          title: requiredIssueCount ? "继续字段确认" : "查看导入校验",
+          text: `${importSession?.fileName} · ${totalRecords.toLocaleString()} 条反馈。`,
+          action: requiredIssueCount ? "处理需确认字段" : "查看校验结果",
+        },
+        { screen: "projects" as const, secondary: "projects-all", primary: "projects" as const, title: "查看已导入项目", text: `${projectCount} 个项目来自当前上传数据。`, action: "查看项目列表" },
+        { screen: "drilldown" as const, secondary: "dashboard-scope", primary: "dashboard" as const, title: "进入报告仪表盘", text: "按时间、项目、区域和主题筛选真实样本。", action: "进入筛选范围" },
+        { screen: "query" as const, secondary: "qa-new", primary: "query" as const, title: "继续 AI 问答", text: "围绕当前导入数据新建问答或继续历史。", action: "进入新建问答" },
+      ]
+    : [
+        { screen: "import" as const, secondary: "new-upload", primary: "new-project" as const, title: "上传反馈数据", text: "先上传 CSV，系统再生成项目、报告和问答范围。", action: "开始上传" },
+        { screen: "projects" as const, secondary: "projects-all", primary: "projects" as const, title: "查看项目", text: "上传后会显示过往项目和导入批次。", action: "查看空项目页" },
+        { screen: "drilldown" as const, secondary: "dashboard-scope", primary: "dashboard" as const, title: "报告仪表盘", text: "上传后按真实样本筛选和生成报告。", action: "查看空仪表盘" },
+        { screen: "query" as const, secondary: "qa-new", primary: "query" as const, title: "AI 问答", text: "上传数据后可围绕真实反馈提问。", action: "打开问答" },
+      ];
+
   return (
     <div className="screen-grid home-layout" data-route-panel="home">
       <section className="panel home-main-panel">
@@ -1272,18 +1408,13 @@ function HomeScreen({
           <StatusBadge tone="neutral">首页</StatusBadge>
         </div>
         <div className="home-kpi-grid">
-          <MiniKpi label="待处理导入" value="1" tone="warning" />
-          <MiniKpi label="最近项目" value="3" tone="pass" />
-          <MiniKpi label="可继续报告" value="2" tone="pass" />
-          <MiniKpi label="问答记录" value="3" tone="neutral" />
+          <MiniKpi label="当前导入" value={hasImportedData ? "已上传" : "未上传"} tone={hasImportedData ? "pass" : "neutral"} />
+          <MiniKpi label="样本量" value={hasImportedData ? totalRecords.toLocaleString() : "0"} tone={hasImportedData ? "pass" : "neutral"} />
+          <MiniKpi label="项目数" value={String(projectCount)} tone={hasImportedData ? "pass" : "neutral"} />
+          <MiniKpi label="需确认" value={hasImportedData ? String(requiredIssueCount) : "-"} tone={requiredIssueCount ? "warning" : hasImportedData ? "pass" : "neutral"} />
         </div>
         <div className="home-work-grid">
-          {[
-            { screen: "import" as const, secondary: "new-validation", primary: "new-project" as const, title: "继续导入校验", text: "补能体验活动反馈.csv 仍需确认字段映射。", action: "进入导入校验" },
-            { screen: "projects" as const, secondary: "projects-all", primary: "projects" as const, title: "查看过往项目", text: "五一售后服务专项、四月售后月报和活动反馈。", action: "查看全部项目" },
-            { screen: "drilldown" as const, secondary: "dashboard-scope", primary: "dashboard" as const, title: "继续报告仪表盘", text: "按时间、项目、区域、主题继续筛选和输出报告。", action: "进入筛选范围" },
-            { screen: "query" as const, secondary: "qa-new", primary: "query" as const, title: "继续 AI 问答", text: "可以新建自由问答，也可以打开问答记录。", action: "进入新建问答" },
-          ].map((item) => (
+          {homeCards.map((item) => (
             <button className="home-work-card" key={item.title} type="button" onClick={() => onOpenScreen(item.screen, item.secondary, item.primary)}>
               <strong>{item.title}</strong>
               <span>{item.text}</span>
@@ -1301,13 +1432,13 @@ function HomeScreen({
             </div>
           </div>
           <div className="project-card-list">
-            {importedProjects.map((project) => (
+            {hasImportedData ? workbenchData.projects.map((project) => (
               <button key={project.id} type="button" onClick={() => onOpenScreen("projects", "projects-detail", "projects")}>
                 <strong>{project.name}</strong>
                 <span>{project.dateRange}</span>
                 <small>{project.count} 条反馈 · {project.type}</small>
               </button>
-            ))}
+            )) : <EmptyState title="尚无项目" text="上传反馈数据后，这里会显示可继续打开的项目。" />}
           </div>
         </section>
         <section className="panel">
@@ -1318,12 +1449,12 @@ function HomeScreen({
             </div>
           </div>
           <div className="home-rule-list">
-            {queryThreads.map((thread) => (
+            {queryThreads.length ? queryThreads.map((thread) => (
               <button key={thread.id} type="button" onClick={() => onOpenScreen("query", "qa-new", "query")}>
                 <strong>{thread.title}</strong>
                 <span>{thread.meta}</span>
               </button>
-            ))}
+            )) : <EmptyState title="暂无问答记录" text="发送第一个问题后，会保留在这里。" />}
           </div>
         </section>
       </aside>
@@ -1331,72 +1462,74 @@ function HomeScreen({
   );
 }
 
-function SecondaryWorkspace({ secondaryId }: { secondaryId: string }) {
-  const copy = secondaryWorkspaceCopy[secondaryId] ?? secondaryWorkspaceCopy["dashboard-overview"];
-
-  return (
-    <div className="secondary-workspace" data-secondary-id={secondaryId}>
-      <div className="secondary-workspace-head">
-        <div>
-          <span>{copy.eyebrow}</span>
-          <strong>{copy.title}</strong>
-          <p>{copy.summary}</p>
-        </div>
-      </div>
-      <div className="secondary-workspace-grid">
-        {copy.items.map((item) => (
-          <article className={`secondary-workspace-card ${item.tone}`} key={item.title}>
-            <div>
-              <strong>{item.title}</strong>
-              <StatusBadge tone={item.tone}>{item.status}</StatusBadge>
-            </div>
-            <p>{item.text}</p>
-          </article>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function ImportScreen({
   activeSecondaryId,
+  importSession,
+  workbenchData,
+  onImportSessionChange,
+  onImportSessionUpdate,
   onAction,
   onOpenScreen,
   onOpenInitialReport,
 }: {
   activeSecondaryId: string;
+  importSession: ImportSession | null;
+  workbenchData: WorkbenchData;
+  onImportSessionChange: (session: ImportSession) => void;
+  onImportSessionUpdate: (session: ImportSession, message: string) => void;
   onAction: (message: string) => void;
   onOpenScreen: (screen: ScreenId, secondaryId?: string, primaryId?: PrimaryNavId) => void;
   onOpenInitialReport: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [selectedFileName, setSelectedFileName] = useState("");
-  const [recognitionStatus, setRecognitionStatus] = useState("待复核");
-  const hasSelectedFile = selectedFileName.length > 0;
+  const [recognitionStatus, setRecognitionStatus] = useState(importSession?.recognitionStatus ?? "待上传");
+  const hasSelectedFile = Boolean(importSession);
+  const selectedFileName = importSession?.fileName ?? "";
+  const requiredIssueCount = importSession?.fieldIssues.filter((item) => item.required).length ?? 0;
+  const validationTableRows = validationRowsFromSession(importSession);
 
-  if (activeSecondaryId === "new-mapping") return <ImportMappingPage onAction={onAction} />;
-  if (activeSecondaryId === "new-validation") return <ImportValidationPage onAction={onAction} />;
+  useEffect(() => {
+    setRecognitionStatus(importSession?.recognitionStatus ?? "待上传");
+  }, [importSession]);
+
+  if (activeSecondaryId === "new-mapping") return <ImportMappingPage importSession={importSession} onImportSessionUpdate={onImportSessionUpdate} onAction={onAction} />;
+  if (activeSecondaryId === "new-validation") return <ImportValidationPage importSession={importSession} onAction={onAction} />;
   if (activeSecondaryId === "new-report") return <ImportInitialReportPage onAction={onAction} onOpenReport={onOpenInitialReport} />;
-  if (activeSecondaryId === "new-history") return <ImportHistoryPage onAction={onAction} onOpenScreen={onOpenScreen} />;
+  if (activeSecondaryId === "new-history") return <ImportHistoryPage importSession={importSession} workbenchData={workbenchData} onAction={onAction} onOpenScreen={onOpenScreen} />;
 
   const openUploadPicker = () => {
     fileInputRef.current?.click();
   };
 
-  const handleFileSelected = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    setSelectedFileName(file.name);
-    onAction(`已选择文件「${file.name}」，可继续字段映射和导入校验`);
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      onAction("当前手动测试请上传 CSV 文件；Excel 文件需要先另存为 CSV 后导入");
+      event.target.value = "";
+      return;
+    }
+    const csvText = await file.text();
+    const result = parseAfterSalesFeedbackCsv(csvText, { fileName: file.name });
+    const session = buildImportSessionFromExports(file.name, result.exports, result.errors, result.warnings);
+    onImportSessionChange(session);
+    event.target.value = "";
   };
   const markTemplateDownload = () => onAction("已下载标准导入模板");
   const rerunRecognition = () => {
-    if (!hasSelectedFile) {
+    if (!importSession) {
       onAction("请先上传反馈数据文件");
       return;
     }
-    setRecognitionStatus("已重新识别");
-    onAction("已重新识别字段映射，推荐意愿字段仍需确认");
+    const rebuiltSession = buildImportSessionFromExports(
+      importSession.fileName,
+      importSession.exports,
+      importSession.parseErrors,
+      importSession.parseWarnings,
+    );
+    setRecognitionStatus(rebuiltSession.recognitionStatus);
+    onImportSessionChange(rebuiltSession);
+    onAction(requiredIssueCount ? `已重新识别字段映射，仍有 ${requiredIssueCount} 项需要确认` : "已重新识别字段映射，当前上传文件无必填缺失");
   };
 
   return (
@@ -1439,10 +1572,10 @@ function ImportScreen({
           </div>
         </div>
         <div className="compact-kpis">
-          <MiniKpi label="识别项目" value={hasSelectedFile ? "1" : "-"} tone={hasSelectedFile ? "pass" : "neutral"} />
-          <MiniKpi label="字段覆盖" value={hasSelectedFile ? "94.8%" : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
-          <MiniKpi label="需确认" value={hasSelectedFile ? "2 项" : "-"} tone={hasSelectedFile ? "warning" : "neutral"} />
-          <MiniKpi label="隐私字段" value={hasSelectedFile ? "已脱敏" : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
+          <MiniKpi label="识别项目" value={hasSelectedFile ? String(workbenchData.projects.length) : "-"} tone={hasSelectedFile ? "pass" : "neutral"} />
+          <MiniKpi label="可读取行数" value={hasSelectedFile ? String(importSession?.records.length ?? 0) : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
+          <MiniKpi label="需确认" value={hasSelectedFile ? `${requiredIssueCount} 项` : "-"} tone={requiredIssueCount ? "warning" : hasSelectedFile ? "pass" : "neutral"} />
+          <MiniKpi label="隐私字段" value={hasSelectedFile ? (importSession?.validationSummary.items.find((item) => item.id === "privacy-check")?.status === "pass" ? "未发现风险" : "需处理") : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
         </div>
       </section>
       <section className="panel validation-panel">
@@ -1455,14 +1588,14 @@ function ImportScreen({
         </div>
         <div className="route-summary-grid">
           <MiniKpi label="识别状态" value={recognitionStatus} tone={recognitionStatus === "已重新识别" ? "pass" : "warning"} />
-          <MiniKpi label="当前文件" value={hasSelectedFile ? (selectedFileName.endsWith(".csv") ? "CSV" : "Excel") : "未选择"} tone="neutral" />
-          <MiniKpi label="字段覆盖" value={hasSelectedFile ? "94.8%" : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
-          <MiniKpi label="需确认" value={hasSelectedFile ? "2 项" : "-"} tone={hasSelectedFile ? "warning" : "neutral"} />
+          <MiniKpi label="当前文件" value={hasSelectedFile ? (importSession?.fileKind ?? "CSV") : "未选择"} tone="neutral" />
+          <MiniKpi label="样本量" value={hasSelectedFile ? `${importSession?.records.length ?? 0}` : "待识别"} tone={hasSelectedFile ? "pass" : "neutral"} />
+          <MiniKpi label="需确认" value={hasSelectedFile ? `${requiredIssueCount} 项` : "-"} tone={requiredIssueCount ? "warning" : hasSelectedFile ? "pass" : "neutral"} />
         </div>
         {hasSelectedFile ? (
           <DataTable
             columns={["字段", "状态", "结果", "说明"]}
-            rows={validationRows}
+            rows={validationTableRows}
             toneColumn={1}
           />
         ) : (
@@ -1473,28 +1606,36 @@ function ImportScreen({
         )}
       </section>
       <div className="side-stack">
-        <ImportStatusPanel hasSelectedFile={hasSelectedFile} />
+        <ImportStatusPanel importSession={importSession} />
       </div>
     </div>
   );
 }
 
-function ImportMappingPage({ onAction }: { onAction: (message: string) => void }) {
-  const [mappingSaved, setMappingSaved] = useState(false);
-  const [activeReminder, setActiveReminder] = useState("推荐意愿缺失 64 条");
-  const [confirmedReminders, setConfirmedReminders] = useState<string[]>([]);
-  const reminderItems = [
-    { id: "推荐意愿缺失 64 条", title: "推荐意愿缺失", count: "64 条", field: "nps_score", result: "不参与 NPS，保留原文和评分", required: true },
-    { id: "服务评分缺失 22 条", title: "服务评分缺失", count: "22 条", field: "service_score", result: "进入无评分样本，报告中单独标记", required: true },
-    { id: "反馈原文字段预览", title: "反馈原文字段预览", count: "已抽样", field: "feedback_text", result: "原文池可分页查看，不放入初始复盘正文", required: false },
-  ];
+function ImportMappingPage({
+  importSession,
+  onImportSessionUpdate,
+  onAction,
+}: {
+  importSession: ImportSession | null;
+  onImportSessionUpdate: (session: ImportSession, message: string) => void;
+  onAction: (message: string) => void;
+}) {
+  const [mappingSaved, setMappingSaved] = useState(Boolean(importSession?.mappingSavedAt));
+  const [activeReminder, setActiveReminder] = useState("nps-score");
+  const [confirmedReminders, setConfirmedReminders] = useState<string[]>(() => importSession?.confirmedFieldIssueIds ?? []);
+  const reminderItems = importSession?.fieldIssues ?? [];
   const pendingReminderCount = reminderItems.filter((item) => item.required && !confirmedReminders.includes(item.id)).length;
-  const recommendationConfirmed = confirmedReminders.includes("推荐意愿缺失 64 条");
-  const serviceScoreConfirmed = confirmedReminders.includes("服务评分缺失 22 条");
-  const feedbackPreviewConfirmed = confirmedReminders.includes("反馈原文字段预览");
+  const recommendationIssue = reminderItems.find((item) => item.id === "nps-score");
+  const serviceScoreIssue = reminderItems.find((item) => item.id === "service-rating");
+  const feedbackPreviewIssue = reminderItems.find((item) => item.id === "feedback-text");
+  const recommendationConfirmed = !recommendationIssue?.required || confirmedReminders.includes("nps-score");
+  const serviceScoreConfirmed = !serviceScoreIssue?.required || confirmedReminders.includes("service-rating");
+  const feedbackPreviewConfirmed = !feedbackPreviewIssue?.required || confirmedReminders.includes("feedback-text");
   const activeReminderDetail = reminderItems.find((item) => item.id === activeReminder) ?? reminderItems[0];
   const confirmedRequiredCount = reminderItems.filter((item) => item.required && confirmedReminders.includes(item.id)).length;
   const requiredReminderCount = reminderItems.filter((item) => item.required).length;
+  const totalRecords = importSession?.records.length ?? 0;
   const mappingRows = [
     ["提交时间", "submit_time", "时间维度", "已通过"],
     ["项目名称", "project_name", "项目筛选", "已通过"],
@@ -1506,13 +1647,40 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
     ["推荐意愿", "nps_score", "NPS 指标", recommendationConfirmed ? "已确认" : "需确认"],
   ];
   const confirmActiveReminder = () => {
+    if (!activeReminderDetail) {
+      onAction("请先上传反馈数据文件");
+      return;
+    }
+    if (!activeReminderDetail?.required) {
+      onAction(`「${activeReminderDetail?.title ?? "当前项"}」无需人工确认`);
+      return;
+    }
     if (confirmedReminders.includes(activeReminder)) {
-      onAction(`「${activeReminder}」已确认`);
+      onAction(`「${activeReminderDetail.title}」已确认`);
       return;
     }
     setConfirmedReminders((current) => [...current, activeReminder]);
     setMappingSaved(false);
-    onAction(`已确认「${activeReminder}」`);
+    onAction(`已确认「${activeReminderDetail.title}」`);
+  };
+
+  useEffect(() => {
+    setMappingSaved(Boolean(importSession?.mappingSavedAt));
+    setConfirmedReminders(importSession?.confirmedFieldIssueIds ?? []);
+  }, [importSession?.fileName, importSession?.mappingSavedAt, importSession?.confirmedFieldIssueIds]);
+
+  const saveMapping = () => {
+    if (!importSession) {
+      onAction("请先上传反馈数据文件");
+      return;
+    }
+    const savedSession: ImportSession = {
+      ...importSession,
+      mappingSavedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+      confirmedFieldIssueIds: confirmedReminders,
+    };
+    setMappingSaved(true);
+    onImportSessionUpdate(savedSession, "字段映射已保存，可进入导入校验");
   };
 
   return (
@@ -1528,12 +1696,19 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
           </StatusBadge>
         </div>
         <div className="route-summary-grid">
-          <MiniKpi label="必填字段" value="8" tone="pass" />
-          <MiniKpi label="自动匹配" value="94.8%" tone="pass" />
+          <MiniKpi label="导入样本" value={importSession ? String(totalRecords) : "未上传"} tone={importSession ? "pass" : "neutral"} />
+          <MiniKpi label="自动匹配" value={importSession ? "按表头识别" : "待上传"} tone={importSession ? "pass" : "neutral"} />
           <MiniKpi label="需确认" value={`${pendingReminderCount}`} tone={pendingReminderCount ? "warning" : "pass"} />
           <MiniKpi label="反馈原文" value="已保留" tone="pass" />
         </div>
-        <DataTable columns={["业务字段", "表格字段", "用于哪个功能", "状态"]} rows={mappingRows} toneColumn={3} />
+        {importSession ? (
+          <DataTable columns={["业务字段", "表格字段", "用于哪个功能", "状态"]} rows={mappingRows} toneColumn={3} />
+        ) : (
+          <div className="empty-state-panel">
+            <strong>尚未上传文件</strong>
+            <span>上传 CSV 后才能确认字段映射。</span>
+          </div>
+        )}
         <div className="route-action-bar">
           <div>
             <strong>字段映射会影响后续所有筛选、报告和 AI 问答</strong>
@@ -1542,13 +1717,10 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
           <button
             className="primary-button"
             type="button"
-            onClick={() => {
-              setMappingSaved(true);
-              onAction("字段映射已保存，可进入导入校验");
-            }}
-            disabled={pendingReminderCount > 0}
+            onClick={saveMapping}
+            disabled={!importSession || pendingReminderCount > 0}
           >
-            {mappingSaved ? "已保存映射" : pendingReminderCount ? "先确认字段" : "保存映射"}
+            {!importSession ? "先上传文件" : mappingSaved ? "已保存映射" : pendingReminderCount ? "先确认字段" : "保存映射"}
           </button>
         </div>
       </section>
@@ -1561,11 +1733,13 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
             </div>
             <StatusBadge tone={pendingReminderCount ? "warning" : "pass"}>{confirmedRequiredCount}/{requiredReminderCount}</StatusBadge>
           </div>
-          <div className="confirmation-progress" aria-label="人工确认进度">
-            <span style={{ width: `${Math.round((confirmedRequiredCount / requiredReminderCount) * 100)}%` }} />
-          </div>
-          <div className="action-list">
-            {reminderItems.map((item) => {
+          {importSession ? (
+            <>
+              <div className="confirmation-progress" aria-label="人工确认进度">
+                <span style={{ width: `${requiredReminderCount ? Math.round((confirmedRequiredCount / requiredReminderCount) * 100) : 100}%` }} />
+              </div>
+              <div className="action-list">
+                {reminderItems.map((item) => {
               const confirmed = confirmedReminders.includes(item.id);
               return (
               <button
@@ -1574,45 +1748,62 @@ function ImportMappingPage({ onAction }: { onAction: (message: string) => void }
                 type="button"
                 onClick={() => {
                   setActiveReminder(item.id);
-                  onAction(`已查看「${item.id}」`);
+                  onAction(`已查看「${item.title}」`);
                 }}
               >
                 <span>{item.title}</span>
-                <small>{confirmed ? "已确认" : item.required ? item.count : "预览"}</small>
+                <small>{confirmed ? "已确认" : item.required ? `${item.count} 条` : item.status === "pass" ? "已通过" : "预览"}</small>
               </button>
               );
             })}
-          </div>
-          <div className="confirmation-detail-card">
-            <strong>{activeReminderDetail.title}</strong>
-            <dl>
-              <div><dt>字段</dt><dd>{activeReminderDetail.field}</dd></div>
-              <div><dt>数量</dt><dd>{activeReminderDetail.count}</dd></div>
-              <div><dt>处理</dt><dd>{activeReminderDetail.result}</dd></div>
-            </dl>
-          </div>
-          <button className="primary-button confirm-reminder-button" type="button" onClick={confirmActiveReminder}>
-            {confirmedReminders.includes(activeReminder) ? "已确认" : "确认当前项"}
-          </button>
+              </div>
+              <div className="confirmation-detail-card">
+                <strong>{activeReminderDetail.title}</strong>
+                <dl>
+                  <div><dt>字段</dt><dd>{activeReminderDetail.field}</dd></div>
+                  <div><dt>数量</dt><dd>{activeReminderDetail.count} / {totalRecords}</dd></div>
+                  <div><dt>处理</dt><dd>{activeReminderDetail.result}</dd></div>
+                  <div><dt>说明</dt><dd>{activeReminderDetail.detail}</dd></div>
+                </dl>
+                <div className="field-issue-examples">
+                  {activeReminderDetail.examples.map((example) => (
+                    <p key={example}>{example}</p>
+                  ))}
+                </div>
+              </div>
+              <button className="primary-button confirm-reminder-button" type="button" onClick={confirmActiveReminder} disabled={!activeReminderDetail.required}>
+                {!activeReminderDetail.required ? "无需确认" : confirmedReminders.includes(activeReminder) ? "已确认" : "确认当前项"}
+              </button>
+            </>
+          ) : (
+            <div className="empty-state-panel">
+              <strong>没有待确认字段</strong>
+              <span>上传文件后会显示缺失字段、处理方式和样例原文。</span>
+            </div>
+          )}
         </section>
       </aside>
     </div>
   );
 }
 
-function ImportValidationPage({ onAction }: { onAction: (message: string) => void }) {
+function ImportValidationPage({ importSession, onAction }: { importSession: ImportSession | null; onAction: (message: string) => void }) {
   const [lastRunAt, setLastRunAt] = useState("刚刚");
   const [rerunCount, setRerunCount] = useState(0);
   const validationSummary = useMemo(() => {
     const rerunSuffix = rerunCount ? `第 ${rerunCount + 1} 次校验` : "首次校验";
-    return [
-      ["行数完整性", "1,240 / 1,240", "全部行可读取", "已通过"],
-      ["时间解析", "1,240 / 1,240", "可用于日、周、月等周期", "已通过"],
-      ["推荐意愿", "1,176 / 1,240", rerunCount ? `${rerunSuffix}后仍需人工确认` : "缺失样本不参与 NPS", "需确认"],
-      ["隐私字段", "手机号、姓名、VIN", "默认脱敏后进入系统", "已脱敏"],
-      ["重复反馈", rerunCount ? "0 条 / 已复扫" : "0 条", "未发现重复导入", "已通过"],
-    ];
-  }, [rerunCount]);
+    if (!importSession) {
+      return [["导入文件", "0 条", "请先上传 CSV 文件", "待上传"]];
+    }
+    return importSession.validationSummary.items.map((item) => [
+      item.label,
+      item.metric,
+      rerunCount ? `${rerunSuffix}：${item.detail}` : item.detail,
+      item.status === "pass" ? "已通过" : item.status === "warning" ? "需确认" : "错误",
+    ]);
+  }, [importSession, rerunCount]);
+  const npsIssue = importSession?.fieldIssues.find((item) => item.id === "nps-score");
+  const privacyStatus = importSession?.validationSummary.items.find((item) => item.id === "privacy-check")?.status;
 
   return (
     <div className="screen-grid import-page-layout" data-route-panel="new-validation">
@@ -1635,16 +1826,16 @@ function ImportValidationPage({ onAction }: { onAction: (message: string) => voi
           </button>
         </div>
         <div className="route-summary-grid">
-          <MiniKpi label="可读取行数" value="1,240" tone="pass" />
+          <MiniKpi label="可读取行数" value={importSession ? String(importSession.records.length) : "0"} tone={importSession ? "pass" : "neutral"} />
           <MiniKpi label="校验轮次" value={`${rerunCount + 1}`} tone="neutral" />
-          <MiniKpi label="推荐缺失" value="64" tone="warning" />
-          <MiniKpi label="隐私字段" value="已脱敏" tone="pass" />
+          <MiniKpi label="推荐缺失" value={String(npsIssue?.count ?? 0)} tone={(npsIssue?.count ?? 0) > 0 ? "warning" : "pass"} />
+          <MiniKpi label="隐私字段" value={privacyStatus === "fail" ? "需处理" : importSession ? "未发现风险" : "待识别"} tone={privacyStatus === "fail" ? "risk" : importSession ? "pass" : "neutral"} />
         </div>
         <DataTable columns={["校验项", "结果", "说明", "状态"]} rows={validationSummary} toneColumn={3} />
         <PanelFooterNote title="最近校验" text={lastRunAt} />
       </section>
       <aside className="side-stack">
-        <ImportStatusPanel />
+        <ImportStatusPanel importSession={importSession} />
       </aside>
     </div>
   );
@@ -1743,16 +1934,24 @@ function ReportGenerationChecklist() {
 }
 
 function ImportHistoryPage({
+  importSession,
+  workbenchData,
   onAction,
   onOpenScreen,
 }: {
+  importSession: ImportSession | null;
+  workbenchData: WorkbenchData;
   onAction: (message: string) => void;
   onOpenScreen: (screen: ScreenId, secondaryId?: string, primaryId?: PrimaryNavId) => void;
 }) {
   const [lastRefreshAt, setLastRefreshAt] = useState("未刷新");
   const [processingBatch, setProcessingBatch] = useState("未选择");
-  const [historyRows, setHistoryRows] = useState(importHistory);
-  const pendingBatchName = "补能体验活动反馈.csv";
+  const [historyRows, setHistoryRows] = useState(workbenchData.importHistoryRows);
+  const pendingBatchName = importSession?.fileName ?? historyRows.find((row) => row[2] !== "已导入")?.[0] ?? historyRows[0]?.[0] ?? "当前批次";
+
+  useEffect(() => {
+    setHistoryRows(workbenchData.importHistoryRows);
+  }, [workbenchData.importHistoryRows]);
 
   return (
     <div className="screen-grid import-page-layout" data-route-panel="new-history">
@@ -1768,10 +1967,8 @@ function ImportHistoryPage({
             onClick={() => {
               const refreshedAt = new Date().toLocaleTimeString("zh-CN", { hour12: false });
               setLastRefreshAt(refreshedAt);
-              setHistoryRows((rows) =>
-                rows.map((row) => row[0] === pendingBatchName ? [row[0], refreshedAt, "待配置", row[3]] : row),
-              );
-              onAction("已刷新导入历史");
+              setHistoryRows(workbenchData.importHistoryRows);
+              onAction(importSession ? "导入历史已按当前上传文件刷新" : "当前没有上传文件，导入历史为空");
             }}
           >
             刷新
@@ -1780,8 +1977,8 @@ function ImportHistoryPage({
         <div className="route-summary-grid">
           <MiniKpi label="最近刷新" value={lastRefreshAt} tone="neutral" />
           <MiniKpi label="当前处理" value={processingBatch} tone={processingBatch === "未选择" ? "warning" : "pass"} />
-          <MiniKpi label="已导入批次" value="2" tone="pass" />
-          <MiniKpi label="需配置批次" value="1" tone="warning" />
+          <MiniKpi label="已导入批次" value={String(historyRows.filter((row) => row[2] === "已导入").length)} tone="pass" />
+          <MiniKpi label="需配置批次" value={String(historyRows.filter((row) => row[2] !== "已导入").length)} tone={historyRows.some((row) => row[2] !== "已导入") ? "warning" : "pass"} />
         </div>
         <DataTable columns={["文件", "导入时间", "状态", "行数"]} rows={historyRows} toneColumn={2} />
         <div className="route-action-bar">
@@ -1793,6 +1990,10 @@ function ImportHistoryPage({
             className="primary-button"
             type="button"
             onClick={() => {
+              if (!importSession) {
+                onAction("请先上传反馈数据文件，再继续处理批次");
+                return;
+              }
               setProcessingBatch(pendingBatchName);
               onOpenScreen("import", "new-mapping", "new-project");
               onAction(`已进入「${pendingBatchName}」字段映射`);
@@ -1803,7 +2004,7 @@ function ImportHistoryPage({
         </div>
       </section>
       <aside className="side-stack">
-        <ImportStatusPanel />
+        <ImportStatusPanel importSession={importSession} />
       </aside>
     </div>
   );
@@ -1823,7 +2024,7 @@ function ProjectsScreen({
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [activeProjectChip, setActiveProjectChip] = useState("全部类型");
   const [archiveMessage, setArchiveMessage] = useState("未执行归档操作");
-  const [archivedProjectIds, setArchivedProjectIds] = useState<string[]>(["april-monthly"]);
+  const [archivedProjectIds, setArchivedProjectIds] = useState<string[]>(() => loadPersistedArchivedProjectIds());
   const isArchiveView = activeSecondaryId === "projects-archive";
   const isRecentView = activeSecondaryId === "projects-recent";
   const isBatchView = activeSecondaryId === "projects-batches";
@@ -1834,13 +2035,11 @@ function ProjectsScreen({
     return true;
   });
   const visibleProjects = routeProjects.filter((project, index) => {
-    if (activeProjectChip === "售后服务") return project.type === "售后服务";
-    if (activeProjectChip === "月度复盘") return project.type === "月度复盘";
-    if (activeProjectChip === "活动体验") return project.type === "活动体验";
-    if (activeProjectChip === "待配置优先") return project.id === "energy-event";
+    if (activeProjectChip === "低分优先") return getProjectDetailStats(project).lowScoreCount > 0;
     if (activeProjectChip === "最近打开") return index === 0;
     if (activeProjectChip === "最近导入") return index <= 1;
     if (activeProjectChip === "已归档") return archivedProjectIds.includes(project.id);
+    if (activeProjectChip !== "全部类型") return project.type === activeProjectChip;
     return true;
   });
   const projectRows = importedProjects.map((project, index) => [
@@ -1848,20 +2047,26 @@ function ProjectsScreen({
     project.type,
     project.dateRange,
     project.count,
-    archivedProjectIds.includes(project.id) ? "已归档" : index === 2 ? "需配置" : "已导入",
-    archivedProjectIds.includes(project.id) ? "月报已归档" : index === 0 ? "总复盘已生成" : "等待字段确认",
+    archivedProjectIds.includes(project.id) ? "已归档" : "已导入",
+    buildProjectRowResult(project, archivedProjectIds.includes(project.id), index),
   ]);
   const selectedProject = selectedProjectId
     ? importedProjects.find((project) => project.id === selectedProjectId) ?? null
     : null;
-  const detailProject = selectedProject ?? visibleProjects[0] ?? routeProjects[0] ?? importedProjects[0];
   const projectViewTitle = getProjectPanelTitle(activeSecondaryId);
+  const hasProjects = importedProjects.length > 0;
+  const detailProject = selectedProject ?? visibleProjects[0] ?? routeProjects[0] ?? importedProjects[0];
   const projectViewDescription = getProjectPanelDescription(activeSecondaryId, detailProject);
+  const generatedReportCount = importedProjects.filter((project) => getProjectDetailStats(project).total > 0).length;
+  const pendingConfigurationCount = hasProjects && currentRawRecords.length === 0 ? importedProjects.length : 0;
 
   useEffect(() => {
-    setSelectedProjectId(null);
     setActiveProjectChip(getDefaultProjectChip(activeSecondaryId));
   }, [activeSecondaryId]);
+
+  useEffect(() => {
+    persistArchivedProjectIds(archivedProjectIds);
+  }, [archivedProjectIds]);
 
   const toggleArchiveForProject = (project: ImportedProject) => {
     if (archivedProjectIds.includes(project.id)) {
@@ -1885,6 +2090,43 @@ function ProjectsScreen({
     onAction(`已选择「${project.name}」，可打开仪表盘或继续查看项目详情`);
   };
 
+  if (!hasProjects) {
+    return (
+      <div className="screen-grid projects-layout" data-route-panel={activeSecondaryId}>
+        <section className="panel projects-main-panel">
+          <div className="panel-head">
+            <div>
+              <p>{secondaryPanelCopy[activeSecondaryId]?.title ?? "全部项目"}</p>
+              <h2>{projectViewTitle}</h2>
+            </div>
+            <button className="primary-button" type="button" onClick={onCreateProject}>
+              <PlusCircle size={15} />
+              新建项目
+            </button>
+          </div>
+          <div className="project-summary-grid">
+            <MiniKpi label="项目总数" value="0" tone="neutral" />
+            <MiniKpi label="累计反馈" value="0" tone="neutral" />
+            <MiniKpi label="已生成报告" value="0" tone="neutral" />
+            <MiniKpi label="待配置" value="0" tone="neutral" />
+          </div>
+          <EmptyState title="尚未导入项目" text="上传反馈数据后，这里会生成项目列表、导入批次和项目详情。" />
+        </section>
+        <aside className="side-stack">
+          <section className="panel">
+            <div className="panel-head compact">
+              <div>
+                <p>项目选择</p>
+                <h2>暂无可选项目</h2>
+              </div>
+            </div>
+            <EmptyState title="没有项目记录" text="请先进入新建项目上传 CSV。" />
+          </section>
+        </aside>
+      </div>
+    );
+  }
+
   return (
     <div className="screen-grid projects-layout" data-route-panel={activeSecondaryId}>
       <section className="panel projects-main-panel">
@@ -1902,8 +2144,8 @@ function ProjectsScreen({
         <div className="project-summary-grid">
           <MiniKpi label="项目总数" value={String(importedProjects.length)} tone="pass" />
           <MiniKpi label="累计反馈" value={totalProjectCount(importedProjects)} tone="neutral" />
-          <MiniKpi label="已生成报告" value="2" tone="pass" />
-          <MiniKpi label="待配置" value="1" tone="warning" />
+          <MiniKpi label="可生成报告" value={String(generatedReportCount)} tone={generatedReportCount ? "pass" : "neutral"} />
+          <MiniKpi label="待配置" value={String(pendingConfigurationCount)} tone={pendingConfigurationCount ? "warning" : "neutral"} />
         </div>
         {isBatchView ? (
           <DataTable columns={["文件", "导入时间", "状态", "行数"]} rows={importHistory} toneColumn={2} />
@@ -1921,6 +2163,7 @@ function ProjectsScreen({
             <ProjectFilterToolbar
               activeSecondaryId={activeSecondaryId}
               activeChip={activeProjectChip}
+              projects={routeProjects}
               onSelect={(chip) => {
                 setActiveProjectChip(chip);
                 onAction(`已应用「${chip}」项目筛选`);
@@ -2019,28 +2262,40 @@ function getProjectPanelTitle(activeSecondaryId: string): string {
   return "过往项目与分析状态";
 }
 
-function getProjectPanelDescription(activeSecondaryId: string, project: ImportedProject): string {
+function getProjectPanelDescription(activeSecondaryId: string, project?: ImportedProject): string {
   if (activeSecondaryId === "projects-recent") return "最近打开 / 最近导入";
-  if (activeSecondaryId === "projects-detail") return `当前详情对象：${project.name} / ${project.type} / ${project.dateRange}`;
+  if (activeSecondaryId === "projects-detail" && project) return `当前详情对象：${project.name} / ${project.type} / ${project.dateRange}`;
+  if (activeSecondaryId === "projects-detail") return "暂无项目详情";
   if (activeSecondaryId === "projects-batches") return "导入时间 / 状态 / 样本行数";
   if (activeSecondaryId === "projects-archive") return "已归档项目";
   return "全部已导入项目";
 }
 
+function buildProjectRowResult(project: ImportedProject, archived: boolean, index: number): string {
+  if (archived) return "项目已归档";
+  const stats = getProjectDetailStats(project);
+  if (stats.lowScoreCount > 0) return `${stats.lowScoreCount} 条低分反馈待跟进`;
+  if (index === 0) return "最近导入，可继续分析";
+  return "可继续查看报告";
+}
+
 function ProjectFilterToolbar({
   activeSecondaryId,
   activeChip,
+  projects,
   onSelect,
 }: {
   activeSecondaryId: string;
   activeChip: string;
+  projects: ImportedProject[];
   onSelect: (chip: string) => void;
 }) {
+  const projectTypes = Array.from(new Set(projects.map((project) => project.type))).filter(Boolean);
   const chips = activeSecondaryId === "projects-archive"
     ? ["已归档"]
     : activeSecondaryId === "projects-recent"
-      ? ["最近打开", "最近导入", "待配置优先"]
-      : ["全部类型", "售后服务", "月度复盘", "活动体验"];
+      ? ["最近打开", "最近导入", "低分优先"]
+      : ["全部类型", ...projectTypes];
 
   return (
     <div className="project-filter-toolbar" aria-label="项目筛选">
@@ -2074,19 +2329,9 @@ function ProjectDetailView({
   onArchive: () => void;
 }) {
   const [detailMode, setDetailMode] = useState("项目概览");
-  const reportRows = [
-    ["总复盘报告", project.dateRange, project.id === "energy-event" ? "待生成" : "已生成", project.id === "energy-event" ? "字段配置后生成" : "可继续查看"],
-    ["服务问题闭环", project.dateRange, project.id === "energy-event" ? "待生成" : "已生成", project.id === "energy-event" ? "缺少评分字段" : "等待与解释问题"],
-    ["满意度归因", project.dateRange, project.id === "energy-event" ? "待生成" : "已生成", project.id === "energy-event" ? "缺少 NPS 字段" : "评分与低分原因"],
-  ];
-  const batchRows = project.id === "may-service"
-    ? [
-        ["五一售后服务专项_2026-05.csv", "2026-06-01 09:32", "已导入", "1,240"],
-        ["五一售后服务补充样本.csv", "2026-06-02 10:18", "已导入", "386"],
-      ]
-    : project.id === "energy-event"
-      ? [["补能体验活动反馈.csv", "2026-05-30 11:42", "需配置", "328"]]
-      : [["四月售后月报_2026-04.csv", "2026-05-03 14:20", "已导入", "1,086"]];
+  const projectStats = getProjectDetailStats(project);
+  const reportRows = buildProjectReportRows(project, projectStats);
+  const batchRows = buildProjectBatchRows(project);
   const detailBody = detailMode === "报告输出记录" ? (
     <div className="project-detail-subsection">
       <strong>报告输出记录</strong>
@@ -2107,10 +2352,10 @@ function ProjectDetailView({
         <p>{project.type} / {project.dateRange} / {project.count} 条反馈</p>
       </article>
       <dl>
-        <div><dt>覆盖区域</dt><dd>7 个区域 / 42 个服务中心</dd></div>
-        <div><dt>导入批次</dt><dd>{project.id === "may-service" ? "2 个批次" : "1 个批次"}</dd></div>
-        <div><dt>报告状态</dt><dd>{project.id === "energy-event" ? "字段待配置" : "总复盘已生成"}</dd></div>
-        <div><dt>最近更新</dt><dd>{project.id === "may-service" ? "2026-06-01 09:32" : "2026-05-28 17:45"}</dd></div>
+        <div><dt>覆盖区域</dt><dd>{projectStats.regionCount} 个区域 / {projectStats.centerCount} 个服务中心</dd></div>
+        <div><dt>导入批次</dt><dd>{batchRows.length} 个批次</dd></div>
+        <div><dt>报告状态</dt><dd>{projectStats.total > 0 ? "可生成" : "待导入"}</dd></div>
+        <div><dt>最近更新</dt><dd>{importHistory[0]?.[1] ?? "暂无记录"}</dd></div>
       </dl>
       {detailBody}
       <div className="project-detail-actions">
@@ -2167,6 +2412,49 @@ function ProjectDetailAside({ project, selected }: { project: ImportedProject; s
       </div>
     </section>
   );
+}
+
+function getProjectRecords(project: ImportedProject): NormalizedFeedback[] {
+  return currentRawRecords.filter((record) => record.projectName === project.name);
+}
+
+function getProjectDetailStats(project: ImportedProject): {
+  total: number;
+  regionCount: number;
+  centerCount: number;
+  lowScoreCount: number;
+  averageRating: number;
+  topTopics: string[];
+} {
+  const records = getProjectRecords(project);
+  const metrics = buildMetricSummary(records);
+  return {
+    total: records.length,
+    regionCount: new Set(records.map((record) => record.region).filter(Boolean)).size,
+    centerCount: new Set(records.map((record) => record.serviceCenter).filter(Boolean)).size,
+    lowScoreCount: metrics.lowScoreCount,
+    averageRating: metrics.averageRating,
+    topTopics: inferRecordTopics(records),
+  };
+}
+
+function buildProjectReportRows(project: ImportedProject, stats: ReturnType<typeof getProjectDetailStats>): string[][] {
+  const topReason = stats.topTopics.slice(0, 2).join("、") || "暂无高频主题";
+  return [
+    ["总复盘报告", project.dateRange, stats.total ? "可生成" : "待导入", `${stats.total} 条反馈 / ${stats.centerCount} 个服务中心`],
+    ["服务问题闭环", project.dateRange, stats.lowScoreCount ? "需关注" : "可查看", stats.lowScoreCount ? `${stats.lowScoreCount} 条低分反馈` : "当前项目暂无低分样本"],
+    ["满意度归因", project.dateRange, stats.total ? "可查看" : "待导入", `均分 ${stats.averageRating.toFixed(2)} / ${topReason}`],
+  ];
+}
+
+function buildProjectBatchRows(project: ImportedProject): string[][] {
+  if (!importHistory.length) return [];
+  return importHistory.map((row) => [
+    row[0],
+    row[1],
+    row[2],
+    project.count,
+  ]);
 }
 
 function getDashboardPanelTitle(activeSecondaryId: string): string {
@@ -2312,9 +2600,10 @@ function DrilldownScreen({
   };
 
   const selectTimeRange = (value: string) => {
-    const nextPeriod = defaultTimePeriodValues[value] ?? "";
-    const nextCustomStart = value === "自定义" ? filterState.customStartDate : defaultDrilldownFilter.customStartDate;
-    const nextCustomEnd = value === "自定义" ? filterState.customEndDate : defaultDrilldownFilter.customEndDate;
+    const defaultFilter = buildDefaultFilterForRecords(currentRawRecords);
+    const nextPeriod = buildDefaultTimePeriodValue(value, currentRawRecords) || defaultTimePeriodValues[value] || "";
+    const nextCustomStart = value === "自定义" ? filterState.customStartDate : defaultFilter.customStartDate;
+    const nextCustomEnd = value === "自定义" ? filterState.customEndDate : defaultFilter.customEndDate;
     updateFilter(
       {
         ...filterState,
@@ -2322,7 +2611,7 @@ function DrilldownScreen({
         timePeriod: value === "自定义" ? "" : nextPeriod,
         customStartDate: nextCustomStart,
         customEndDate: nextCustomEnd,
-        customTimeRange: value === "自定义" ? `${nextCustomStart} 至 ${nextCustomEnd}` : defaultDrilldownFilter.customTimeRange,
+        customTimeRange: `${nextCustomStart} 至 ${nextCustomEnd}`,
       },
       value === "自定义" ? "已打开自定义时间段" : `已切换时间粒度为「${value}」`,
     );
@@ -2362,7 +2651,7 @@ function DrilldownScreen({
       onAction("当前筛选范围没有可生成工单的服务中心");
       return;
     }
-    const draft = buildServiceCenterWorkOrderDraft(targetRow, buildDrilldownScope(filterState));
+    const draft = buildServiceCenterWorkOrderDraft(targetRow, buildDrilldownScope(filterState), filterState);
     setWorkOrderDraft(draft);
     setRawFeedbackOpen(true);
     onAction(`已生成「${draft.serviceCenter}」服务中心处理工单草稿`);
@@ -2669,7 +2958,14 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
   const reportRows = filterDrilldownRows(effectiveReportFilter);
   const reportRiskRows = reportRows.filter((row) => row[5] !== "低");
   const reportMetrics = buildScopeMetricCards(effectiveReportFilter, reportRows);
-  const reportTotal = getCurrentScopeRawFeedbackTotal(effectiveReportFilter, reportRows);
+  const scopedRawRecords = getScenarioMatchedRawRecords(appliedFilter, selectedScenario);
+  const reportFindings = buildFindingsForScenario(scopedRawRecords, mapScenarioToWorkbenchScenario(selectedScenario));
+  const dataDrivenBullets = buildReportBulletsFromRecords(scopedRawRecords, selectedScenario, reportFindings);
+  const dataDrivenModules = buildReportModulesFromRecords(scopedRawRecords, selectedScenario, reportFindings);
+  const reportTotal = hasImportedRawRecords() ? scopedRawRecords.length : getCurrentScopeRawFeedbackTotal(effectiveReportFilter, reportRows);
+  const displayedReportMetrics = selectedScenario && hasImportedRawRecords()
+    ? buildScopeMetricCardsFromRecords(scopedRawRecords)
+    : reportMetrics;
   const reportTitle = selectedScenario ?? "总复盘";
   const reportHeadline = selectedReport?.headline ?? "服务体验整体稳定，等待与解释问题拉低低分样本";
   const reportSummary = selectedReport?.summary ?? "本期总复盘汇总整体样本、核心指标、重点风险对象和可执行动作。";
@@ -2684,10 +2980,13 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
     "## 重点对象",
     ...reportRows.map((row) => `- ${row[0]} / ${row[1]} / ${row[2]}：反馈 ${row[3]}，评分 ${row[4]}，风险 ${row[5]}，主因 ${row[6]}`),
   ].join("\n");
-  const copyReport = () => {
-    const writePromise = navigator.clipboard?.writeText(buildReportText());
-    if (writePromise) void writePromise.catch(() => undefined);
-    onAction(`已复制「${reportTitle}」报告正文`);
+  const copyReport = async () => {
+    try {
+      await navigator.clipboard?.writeText(buildReportText());
+      onAction(`已复制「${reportTitle}」报告正文`);
+    } catch {
+      onAction("复制失败，请检查浏览器剪贴板权限");
+    }
   };
   const exportCurrentReport = () => {
     const blob = new Blob([buildReportText()], { type: "text/markdown;charset=utf-8" });
@@ -2709,7 +3008,7 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
           <div className="report-title-block">
             <p>总复盘报告</p>
             <h2>{filterScope}：服务体验稳定，但重点风险需要继续闭环</h2>
-            <span>{reportRows.length} 个服务中心 / {reportRiskRows.length} 个风险对象 / 当前视图：{reportTitle}</span>
+            <span>{reportRows.length} 个服务中心 / {reportRiskRows.length} 个风险对象 / 引用原文 {reportTotal.toLocaleString()} 条 / 当前视图：{reportTitle}</span>
           </div>
           <div className="button-row">
             <button className="ghost-button" type="button" onClick={copyReport}>
@@ -2723,7 +3022,7 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
           </div>
         </div>
         <div className="report-summary-band">
-          {reportMetrics.map((metric) => (
+          {displayedReportMetrics.map((metric) => (
             <MetricCard key={metric.label} {...metric} />
           ))}
         </div>
@@ -2734,23 +3033,36 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
             <strong>{reportHeadline}</strong>
           </div>
           <p>{reportSummary}</p>
+          {selectedScenario ? (
+            <div className={reportTotal ? "scenario-data-note pass" : "scenario-data-note warning"}>
+              {reportTotal
+                ? `当前专项按「${buildTopicScope(effectiveReportFilter.selectedTopics)}」命中 ${reportTotal.toLocaleString()} 条原文。`
+                : `当前筛选范围没有命中「${selectedScenario}」专项原文。`}
+            </div>
+          ) : null}
           <ul>
-            {(selectedReport?.bullets ?? [`当前范围命中 ${reportTotal.toLocaleString()} 条反馈，覆盖 ${reportRows.length} 个服务中心。`, "低分反馈集中在等待时间、解释不清和预约同步异常。", "建议先从风险服务中心和可回访低分样本开始闭环。"]).map((item) => (
+            {(hasImportedRawRecords()
+              ? dataDrivenBullets
+              : selectedReport?.bullets ?? [`当前范围命中 ${reportTotal.toLocaleString()} 条反馈，覆盖 ${reportRows.length} 个服务中心。`, "低分反馈集中在等待时间、解释不清和预约同步异常。", "建议先从风险服务中心和可回访低分样本开始闭环。"]
+            ).map((item) => (
               <li key={item}>{item}</li>
             ))}
           </ul>
         </article>
         <div className="module-grid">
-          {(selectedReport?.modules ?? [
-            { title: "整体判断", text: "服务体验稳定，但等待和解释问题影响低分样本。" },
-            { title: "核心指标", text: "反馈量、评分、NPS 和低分反馈构成总复盘框架。" },
-            { title: "风险对象", text: "杭州西溪、成都高新、北京望京进入重点跟踪。" },
-            { title: "下一步动作", text: "进入专项报告或导出可执行闭环清单。" },
-          ]).map((module, index) => (
+          {(hasImportedRawRecords()
+            ? dataDrivenModules
+            : selectedReport?.modules ?? [
+              { title: "整体判断", text: "服务体验稳定，但等待和解释问题影响低分样本。" },
+              { title: "核心指标", text: "反馈量、评分、NPS 和低分反馈构成总复盘框架。" },
+              { title: "风险对象", text: "按当前范围识别风险服务中心。" },
+              { title: "下一步动作", text: "进入专项报告或导出可执行闭环清单。" },
+            ]
+          ).map((module, index) => (
             <article className="module-card" key={module.title}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <strong>{module.title}</strong>
-              <small>{module.text}</small>
+              <small>{scopedRawRecords.length ? module.text : selectedScenario ? "当前范围没有该专项样本。" : module.text}</small>
             </article>
           ))}
         </div>
@@ -2758,6 +3070,7 @@ function ReportScreen({ activeSecondaryId, appliedFilter, onAction }: { activeSe
           compact
           filterState={effectiveReportFilter}
           filteredRows={reportRows}
+          recordsOverride={selectedScenario ? scopedRawRecords : undefined}
           label="报告引用证据"
           heading="按当前范围分页"
         />
@@ -2822,12 +3135,14 @@ function AiQaScreen({
   );
   const draftConversationIdRef = useRef<string | null>(initialQuestion ? "dashboard-new" : null);
   const handledInitialQuestionRef = useRef("");
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const persistedQaState = useMemo(() => loadPersistedQaState(), []);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(persistedQaState.selectedThreadId);
   const [contextProjectId, setContextProjectId] = useState<string | null>(null);
   const [scopeMode, setScopeMode] = useState<QaScopeMode>(initialScopeMode);
-  const [favoriteThreadIds, setFavoriteThreadIds] = useState<string[]>([]);
+  const [favoriteThreadIds, setFavoriteThreadIds] = useState<string[]>(persistedQaState.favoriteThreadIds);
   const [conversationThreads, setConversationThreads] = useState<QaThread[]>(() => {
-    if (!initialQuestion) return queryThreads;
+    const persistedThreads = persistedQaState.conversationThreads.length ? persistedQaState.conversationThreads : queryThreads;
+    if (!initialQuestion) return persistedThreads;
     return [
       {
         id: "dashboard-new",
@@ -2836,7 +3151,7 @@ function AiQaScreen({
         turns: initialMessages,
         scopeSnapshot: initialScopeSnapshot,
       },
-      ...queryThreads,
+      ...persistedThreads,
     ];
   });
   const [answerSaved, setAnswerSaved] = useState(Boolean(initialQuestion));
@@ -2876,15 +3191,38 @@ function AiQaScreen({
   const activeMetrics = useMemo(() => buildMetricSummary(activeRecords), [activeRecords]);
   const activeFindings = useMemo(() => buildFindingsForScenario(activeRecords, "服务问题闭环"), [activeRecords]);
   const suggestedQuestions = useMemo(
-    () => buildSuggestedAgentQuestions({ records: activeRecords, metrics: activeMetrics, findings: activeFindings, scopeLabel: activeScopeSnapshot.label }),
+    () => activeRecords.length
+      ? buildSuggestedAgentQuestions({ records: activeRecords, metrics: activeMetrics, findings: activeFindings, scopeLabel: activeScopeSnapshot.label })
+      : [],
     [activeRecords, activeMetrics, activeFindings, activeScopeSnapshot],
   );
   const lastUserMessageIndex = activeMessages.map((message) => message.role).lastIndexOf("user");
+
+  useEffect(() => {
+    persistQaState({ conversationThreads, favoriteThreadIds, selectedThreadId });
+  }, [conversationThreads, favoriteThreadIds, selectedThreadId]);
+
+  useEffect(() => {
+    if (!selectedThreadId || activeMessages.length > 0) return;
+    const persistedThread = conversationThreads.find((thread) => thread.id === selectedThreadId);
+    if (!persistedThread) {
+      setSelectedThreadId(null);
+      return;
+    }
+    setActiveMessages(persistedThread.turns ?? buildLegacyThreadMessages(persistedThread.id));
+    setActiveEvidenceQuotes(persistedThread.evidenceQuotes ?? buildLegacyThreadEvidenceQuotes(persistedThread.id));
+    setSourceReasoningContent(persistedThread.reasoningContent ?? "");
+    setAnswerSaved(true);
+  }, [selectedThreadId, conversationThreads, activeMessages.length]);
 
   const runQuestion = async (text: string, scopeOverride?: QaScopeSnapshot) => {
     const trimmed = text.trim();
     if (!trimmed) {
       onAction("请输入要查询的问题");
+      return;
+    }
+    if (activeRecords.length === 0) {
+      onAction("当前没有可查询的数据，请先上传反馈文件");
       return;
     }
     const draftThreadId = draftConversationIdRef.current;
@@ -3264,7 +3602,7 @@ function AiQaScreen({
         </div>
         <div className="qa-reference-bar" aria-label="本次对话参考项目">
           <span>参考项目</span>
-          {qaProjects.map((project) => (
+          {qaProjects.length ? qaProjects.map((project) => (
             <button
               className={project.id === activeScopeSnapshot.contextProjectId ? "active" : ""}
               key={project.id}
@@ -3275,7 +3613,7 @@ function AiQaScreen({
               <strong>{project.name}</strong>
               <small>{project.type} / {project.count} 条</small>
             </button>
-          ))}
+          )) : <em>上传数据后可选择参考项目</em>}
         </div>
         <div className="chat-transcript">
           {activeMessages.length === 0 ? (
@@ -3310,7 +3648,7 @@ function AiQaScreen({
           ) : null}
         </div>
         <div className="suggested-question-strip" aria-label="建议追问">
-          {suggestedQuestions.slice(0, 3).map((item) => (
+          {suggestedQuestions.length ? suggestedQuestions.slice(0, 3).map((item) => (
             <button
               key={item}
               type="button"
@@ -3322,7 +3660,7 @@ function AiQaScreen({
             >
               {item}
             </button>
-          ))}
+          )) : <span>上传数据并生成结果后显示建议追问</span>}
         </div>
         <div className="composer">
           <textarea
@@ -3427,12 +3765,14 @@ function ProfileScreen({ activeSecondaryId, onAction }: { activeSecondaryId: str
             <MiniKpi key={kpi.label} {...kpi} />
           ))}
         </div>
-        <div className="profile-action-grid">
+        <div className="profile-action-grid" role="tablist" aria-label={`${route.title}查看分组`}>
           {route.actions.map(({ label, message }) => (
             <button
               className={activeProfileAction === label ? "active" : ""}
               key={label}
               type="button"
+              role="tab"
+              aria-selected={activeProfileAction === label}
               onClick={() => {
                 setActiveProfileAction(label);
                 onAction(message);
@@ -3496,6 +3836,14 @@ function ProfileScreen({ activeSecondaryId, onAction }: { activeSecondaryId: str
 }
 
 function getProfileActionCards(activeSecondaryId: string, action: string, fallbackCards: Array<{ title: string; text: string; status: string; tone: StatusTone }>) {
+  const projectAuthorizationCards = importedProjects.length
+    ? importedProjects.map((project): { title: string; text: string; status: string; tone: StatusTone } => ({
+      title: project.name,
+      text: `${project.type} / ${project.dateRange} / ${project.count} 条反馈。`,
+      status: "已授权",
+      tone: "pass",
+    }))
+    : [{ title: "暂无已导入项目", text: "上传反馈数据后，这里显示可访问项目。", status: "0 项", tone: "neutral" as const }];
   const profiles: Record<string, Record<string, Array<{ title: string; text: string; status: string; tone: StatusTone }>>> = {
     "profile-settings": {
       "个人设置": [
@@ -3555,9 +3903,7 @@ function getProfileActionCards(activeSecondaryId: string, action: string, fallba
         { title: "默认范围", text: "进入仪表盘不强制限定区域。", status: "全部区域", tone: "pass" },
       ],
       "项目授权": [
-        { title: "五一售后服务专项", text: "可查看报告、原文和问答记录。", status: "已授权", tone: "pass" },
-        { title: "四月售后月报", text: "已归档，可继续查看。", status: "已授权", tone: "pass" },
-        { title: "补能体验活动反馈", text: "字段待配置。", status: "需配置", tone: "warning" },
+        ...projectAuthorizationCards,
       ],
       "归档权限": [
         { title: "查看归档", text: "归档项目不进入默认范围。", status: "可查看", tone: "pass" },
@@ -3570,8 +3916,7 @@ function getProfileActionCards(activeSecondaryId: string, action: string, fallba
 }
 
 function getProfileRouteConfig(activeSecondaryId: string) {
-  const fallback = secondaryWorkspaceCopy[activeSecondaryId] ?? secondaryWorkspaceCopy["profile-settings"];
-  const baseCards = fallback.items;
+  const baseCards = buildProfileBaseCards(activeSecondaryId);
   if (activeSecondaryId === "profile-account") {
     return {
       eyebrow: "账号状态",
@@ -3610,7 +3955,7 @@ function getProfileRouteConfig(activeSecondaryId: string) {
       summary: "脱敏规则、问答记录、导出边界",
       kpis: [
         { label: "默认脱敏", value: "开启", tone: "pass" as const },
-        { label: "可清理记录", value: "3", tone: "neutral" as const },
+        { label: "可清理记录", value: String(queryThreads.length), tone: "neutral" as const },
         { label: "导出边界", value: "受控", tone: "pass" as const },
       ],
       actions: [
@@ -3638,7 +3983,7 @@ function getProfileRouteConfig(activeSecondaryId: string) {
       summary: "区域级、项目级、导入、归档",
       kpis: [
         { label: "区域权限", value: "华东", tone: "pass" as const },
-        { label: "项目权限", value: "3 项", tone: "pass" as const },
+        { label: "项目权限", value: `${importedProjects.length} 项`, tone: importedProjects.length ? "pass" as const : "neutral" as const },
         { label: "归档权限", value: "可查看", tone: "neutral" as const },
       ],
       actions: [
@@ -3651,7 +3996,9 @@ function getProfileRouteConfig(activeSecondaryId: string) {
       supportTitle: "可访问项目",
       table: {
         columns: ["项目", "类型", "时间范围", "反馈量"],
-        rows: importedProjects.map((project) => [project.name, project.type, project.dateRange, `${project.count} 条`]),
+        rows: importedProjects.length
+          ? importedProjects.map((project) => [project.name, project.type, project.dateRange, `${project.count} 条`])
+          : [["暂无已导入项目", "上传反馈数据后显示", "-", "0 条"]],
         toneColumn: undefined,
       },
       supportItems: [],
@@ -3694,6 +4041,35 @@ function getProfileRouteConfig(activeSecondaryId: string) {
   };
 }
 
+function buildProfileBaseCards(activeSecondaryId: string): Array<{ title: string; text: string; status: string; tone: StatusTone }> {
+  if (activeSecondaryId === "profile-account") {
+    return [
+      { title: "账号状态", text: "当前账号正常，可使用工作台。", status: "正常", tone: "pass" },
+      { title: "导入权限", text: "可导入售后反馈 Excel / CSV。", status: "已开启", tone: "pass" },
+      { title: "导出权限", text: "报告导出需要审批。", status: "需审批", tone: "warning" },
+    ];
+  }
+  if (activeSecondaryId === "profile-privacy") {
+    return [
+      { title: "默认脱敏", text: "手机号、姓名、车牌、VIN 默认脱敏。", status: "开启", tone: "pass" },
+      { title: "问答记录", text: queryThreads.length ? `当前 ${queryThreads.length} 条问答记录。` : "暂无问答记录。", status: `${queryThreads.length} 条`, tone: "neutral" },
+      { title: "导出边界", text: "导出前只显示授权范围内的数据。", status: "受控", tone: "pass" },
+    ];
+  }
+  if (activeSecondaryId === "profile-data") {
+    return [
+      { title: "区域权限", text: "当前为区域级权限。", status: "区域级", tone: "pass" },
+      { title: "项目权限", text: importedProjects.length ? `可查看 ${importedProjects.length} 个已导入项目。` : "暂无已导入项目。", status: `${importedProjects.length} 项`, tone: importedProjects.length ? "pass" : "neutral" },
+      { title: "默认范围", text: "默认进入全部项目和全部区域。", status: "全部", tone: "pass" },
+    ];
+  }
+  return [
+    { title: "角色", text: "区域运营主管。", status: "已设置", tone: "pass" },
+    { title: "默认范围", text: "默认不预选项目、不强制套用时间筛选。", status: "全部", tone: "pass" },
+    { title: "通知偏好", text: "导入完成和报告生成后提醒。", status: "开启", tone: "pass" },
+  ];
+}
+
 function HistoryPanel() {
   return (
     <section className="panel mini-panel">
@@ -3704,18 +4080,21 @@ function HistoryPanel() {
         </div>
       </div>
       <div className="history-list">
-        {importHistory.map((item) => (
+        {importHistory.length ? importHistory.map((item) => (
           <p key={item[0]}>
             <span>{item[0]}</span>
             <strong>{item[2]} · {item[3]} 行</strong>
           </p>
-        ))}
+        )) : <EmptyState title="暂无导入记录" text="上传文件后会显示最近导入批次。" />}
       </div>
     </section>
   );
 }
 
-function ImportStatusPanel({ hasSelectedFile = true }: { hasSelectedFile?: boolean }) {
+function ImportStatusPanel({ importSession }: { importSession?: ImportSession | null }) {
+  const hasSelectedFile = Boolean(importSession);
+  const requiredIssues = importSession?.fieldIssues.filter((item) => item.required) ?? [];
+  const primaryIssue = requiredIssues[0];
   return (
     <aside className="panel import-status-panel">
       <div className="panel-head">
@@ -3730,13 +4109,13 @@ function ImportStatusPanel({ hasSelectedFile = true }: { hasSelectedFile?: boole
           <>
             <article className="import-status-item pass">
               <span>当前识别结果</span>
-              <strong>1,240 条反馈</strong>
-              <small>已完成字段识别和基础校验</small>
+              <strong>{(importSession?.records.length ?? 0).toLocaleString()} 条反馈</strong>
+              <small>{importSession?.fileName} · {importSession?.recognitionStatus}</small>
             </article>
-            <article className="import-status-item warning">
+            <article className={requiredIssues.length ? "import-status-item warning" : "import-status-item pass"}>
               <span>需要人工确认</span>
-              <strong>推荐意愿缺失 64 条</strong>
-              <small>缺失样本不参与 NPS 计算</small>
+              <strong>{requiredIssues.length ? `${primaryIssue?.title} ${primaryIssue?.count} 条` : "无必填缺失"}</strong>
+              <small>{requiredIssues.length ? primaryIssue?.result : "评分、推荐意愿和原文均可进入后续分析"}</small>
             </article>
           </>
         ) : (
@@ -3760,12 +4139,12 @@ function ImportStatusPanel({ hasSelectedFile = true }: { hasSelectedFile?: boole
           <strong>最近文件</strong>
         </div>
         <div className="history-list">
-          {importHistory.map((item) => (
+          {importHistory.length ? importHistory.map((item) => (
             <p key={item[0]}>
               <span>{item[0]}</span>
               <strong>{item[2]} · {item[3]} 行</strong>
             </p>
-          ))}
+          )) : <EmptyState title="暂无历史文件" text="上传文件后会显示导入记录。" />}
         </div>
       </div>
     </aside>
@@ -3775,6 +4154,15 @@ function ImportStatusPanel({ hasSelectedFile = true }: { hasSelectedFile?: boole
 function PanelFooterNote({ title, text }: { title: string; text: string }) {
   return (
     <div className="panel-footer-note">
+      <strong>{title}</strong>
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function EmptyState({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="empty-state-panel">
       <strong>{title}</strong>
       <span>{text}</span>
     </div>
@@ -3943,11 +4331,15 @@ function WorkOrderDraftCard({ draft, onAction }: { draft: WorkOrderDraft; onActi
   const recipientEmail = getServiceCenterEmail(draft.serviceCenter);
   const emailDraft = createWorkOrderEmailDraft(draft, recipientEmail);
 
-  const copyWorkOrder = () => {
-    const writePromise = navigator.clipboard?.writeText(draft.copyableText);
-    if (writePromise) void writePromise.catch(() => undefined);
-    setCopyStatus("工单正文已复制");
-    onAction("工单正文已复制，可粘贴到邮件或协同系统");
+  const copyWorkOrder = async () => {
+    try {
+      await navigator.clipboard?.writeText(draft.copyableText);
+      setCopyStatus("工单正文已复制");
+      onAction("工单正文已复制，可粘贴到邮件或协同系统");
+    } catch {
+      setCopyStatus("复制失败");
+      onAction("复制失败，请检查浏览器剪贴板权限");
+    }
   };
 
   return (
@@ -4008,37 +4400,45 @@ function EvidenceList({
   compact = false,
   filterState,
   filteredRows,
+  recordsOverride,
   label,
   heading,
 }: {
   compact?: boolean;
   filterState?: DrilldownFilter;
   filteredRows?: string[][];
+  recordsOverride?: NormalizedFeedback[];
   label?: string;
   heading?: string;
 }) {
-  const isScopedPool = Boolean(filterState && filteredRows);
+  const isScopedPool = Boolean(filterState && filteredRows) || Boolean(recordsOverride);
   const scopeKey = useMemo(
-    () => isScopedPool
+    () => recordsOverride
+      ? `records:${recordsOverride.map((record) => record.id).join("|")}`
+      : isScopedPool
       ? `${buildDrilldownScope(filterState ?? defaultDrilldownFilter)}|${(filteredRows ?? []).map((row) => row.join(":")).join(";")}`
       : "reference-evidence",
-    [filterState, filteredRows, isScopedPool],
+    [filterState, filteredRows, isScopedPool, recordsOverride],
   );
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<EvidencePageSize>(20);
-  const total = isScopedPool
+  const total = recordsOverride
+    ? recordsOverride.length
+    : isScopedPool
     ? getCurrentScopeRawFeedbackTotal(filterState ?? defaultDrilldownFilter, filteredRows ?? drilldownRows)
     : evidenceQuotes.length;
   const activePageSize = isScopedPool ? pageSize : evidenceQuotes.length;
   const pageCount = Math.max(1, Math.ceil(total / activePageSize));
   const startIndex = total === 0 ? 0 : (page - 1) * activePageSize + 1;
   const endIndex = Math.min(total, page * activePageSize);
-  const items = isScopedPool
+  const items = recordsOverride
+    ? recordsOverride.slice(startIndex - 1, endIndex).map((record, index) => rawRecordToEvidence(record, startIndex + index))
+    : isScopedPool
     ? buildRawFeedbackPage(filterState ?? defaultDrilldownFilter, filteredRows ?? drilldownRows, startIndex, endIndex)
     : evidenceQuotes.map((item, index) => ({
       ...item,
       feedbackId: `reference-${index + 1}`,
-      projectName: "五一售后服务专项",
+      projectName: "未关联项目",
       recordNumber: index + 1,
     }));
 
@@ -4416,6 +4816,15 @@ function buildDrilldownScope(filter: DrilldownFilter): string {
 }
 
 function buildContextStats(filter: DrilldownFilter): Array<{ label: string; value: string }> {
+  if (!hasImportedRawRecords()) {
+    return [
+      { label: "项目范围", value: "全部项目" },
+      { label: "时间范围", value: "全部时间" },
+      { label: "样本量", value: "0 条" },
+      { label: "筛选范围", value: "全国 / 全部主题" },
+    ];
+  }
+
   const filteredRows = filterDrilldownRows(filter);
   return [
     { label: "项目范围", value: buildProjectScope(filter.selectedProjectIds) },
@@ -4547,11 +4956,11 @@ function buildTopicScope(selectedTopics: string[]): string {
 function buildReportFilter(filter: DrilldownFilter, scenario: string | null): DrilldownFilter {
   if (!scenario) return filter;
   const scenarioTopics: Record<string, string[]> = {
-    服务问题闭环: ["等待时间", "解释不清"],
+    服务问题闭环: ["等待时间", "解释不清", "问题复发"],
     满意度归因: ["等待时间", "解释不清", "移动服务"],
     区域城市督查端: ["等待时间", "App 同步", "交付解释"],
-    活动体验复盘: ["交付解释", "移动服务"],
-    口碑投诉与风险: ["等待时间", "解释不清", "App 同步"],
+    活动体验复盘: ["活动体验"],
+    口碑投诉与风险: ["口碑投诉", "问题复发"],
   };
   return {
     ...filter,
@@ -4559,7 +4968,20 @@ function buildReportFilter(filter: DrilldownFilter, scenario: string | null): Dr
   };
 }
 
+function mapScenarioToWorkbenchScenario(scenario: string | null): WorkbenchScenario {
+  if (scenario === "满意度归因") return "满意度归因";
+  if (scenario === "区域城市督查端") return "区域/城市下钻";
+  if (scenario === "活动体验复盘") return "活动体验复盘";
+  if (scenario === "口碑投诉与风险") return "口碑素材与风险";
+  return "服务问题闭环";
+}
+
 function buildScopeMetricCards(filter: DrilldownFilter, filteredRows = filterDrilldownRows(filter)) {
+  const rawRecords = filterRawRecords(filter);
+  if (hasImportedRawRecords()) {
+    return buildScopeMetricCardsFromRecords(rawRecords);
+  }
+
   const total = getCurrentScopeRawFeedbackTotal(filter, filteredRows);
   const rowFeedbackTotal = getRowFeedbackTotal(filteredRows);
   const weightedScore = getWeightedAverageRating(filteredRows);
@@ -4595,6 +5017,92 @@ function buildScopeMetricCards(filter: DrilldownFilter, filteredRows = filterDri
       helper: riskCount ? `${riskCount} 个风险对象，优先看原文和工单` : "当前范围暂无风险对象",
       tone: lowScoreFeedback > 0 ? "risk" as const : "pass" as const,
     },
+  ];
+}
+
+function buildScopeMetricCardsFromRecords(rawRecords: NormalizedFeedback[]) {
+  const metrics = buildMetricSummary(rawRecords);
+  const areaCount = new Set(rawRecords.map((record) => record.region).filter(Boolean)).size;
+  const centerCount = new Set(rawRecords.map((record) => record.serviceCenter).filter(Boolean)).size;
+  return [
+    {
+      label: "反馈量",
+      value: metrics.totalFeedback.toLocaleString(),
+      helper: `覆盖 ${areaCount} 个区域 / ${centerCount} 个服务中心`,
+      tone: "neutral" as const,
+    },
+    {
+      label: "平均服务评分",
+      value: metrics.averageRating.toFixed(2),
+      helper: metrics.totalFeedback ? "按当前筛选样本计算" : "当前范围暂无样本",
+      tone: metrics.averageRating > 0 && metrics.averageRating < 4.2 ? "warning" as const : "pass" as const,
+    },
+    {
+      label: "净推荐值",
+      value: String(metrics.netPromoterScore),
+      helper: `高分反馈 ${metrics.promoterCount.toLocaleString()} / 低分反馈 ${metrics.lowScoreCount.toLocaleString()}`,
+      tone: metrics.netPromoterScore < 20 ? "warning" as const : "pass" as const,
+    },
+    {
+      label: "低分反馈",
+      value: metrics.lowScoreCount.toLocaleString(),
+      helper: metrics.lowScoreCount ? `${metrics.riskiestServiceCenter?.serviceCenter ?? "当前范围"} 优先看原文和工单` : "当前范围暂无低分样本",
+      tone: metrics.lowScoreCount > 0 ? "risk" as const : "pass" as const,
+    },
+  ];
+}
+
+function buildReportBulletsFromRecords(
+  records: NormalizedFeedback[],
+  scenario: string | null,
+  findings: ReturnType<typeof buildFindingsForScenario>,
+): string[] {
+  if (records.length === 0) {
+    return [scenario ? `当前范围没有命中「${scenario}」专项样本。` : "当前范围暂无反馈样本。"];
+  }
+  const metrics = buildMetricSummary(records);
+  const riskiest = metrics.riskiestServiceCenter;
+  const topTopics = inferRecordTopics(records).slice(0, 3);
+  const authorizedLowScore = records.filter((record) =>
+    record.contact?.consentState === "已授权联系" && isLowScoreRecord(record),
+  ).length;
+  return [
+    `当前范围命中 ${records.length.toLocaleString()} 条反馈，低分反馈 ${metrics.lowScoreCount.toLocaleString()} 条，净推荐值 ${metrics.netPromoterScore}。`,
+    riskiest
+      ? `${riskiest.city}/${riskiest.serviceCenter} 是当前优先关注对象，命中 ${riskiest.totalFeedback.toLocaleString()} 条反馈。`
+      : `当前范围覆盖 ${new Set(records.map((record) => record.serviceCenter).filter(Boolean)).size} 个服务中心。`,
+    topTopics.length
+      ? `主要问题主题：${topTopics.join("、")}。`
+      : "当前范围暂未形成稳定高频主题。",
+    findings[0]
+      ? `优先处理环节：${findings[0].serviceStage}。`
+      : authorizedLowScore
+        ? `${authorizedLowScore} 条已授权联系的低分样本可进入回访。`
+        : "建议先回到原文池复核具体样本。",
+  ];
+}
+
+function buildReportModulesFromRecords(
+  records: NormalizedFeedback[],
+  scenario: string | null,
+  findings: ReturnType<typeof buildFindingsForScenario>,
+): Array<{ title: string; text: string }> {
+  if (records.length === 0) {
+    return [
+      { title: "样本状态", text: scenario ? "当前专项没有命中样本。" : "当前范围暂无可分析样本。" },
+      { title: "筛选建议", text: "调整时间、项目、区域或主题后再生成报告。" },
+      { title: "原文池", text: "没有命中原文时不生成引用证据。" },
+      { title: "下一步", text: "先完成数据导入或放宽筛选范围。" },
+    ];
+  }
+  const metrics = buildMetricSummary(records);
+  const topFinding = findings[0];
+  const sourceCount = new Set(records.map((record) => record.sourceLabel || record.platform).filter(Boolean)).size;
+  return [
+    { title: "样本范围", text: `${records.length.toLocaleString()} 条反馈，来自 ${sourceCount} 类来源。` },
+    { title: "核心指标", text: `评分 ${metrics.averageRating.toFixed(2)}，NPS ${metrics.netPromoterScore}，低分 ${metrics.lowScoreCount} 条。` },
+    { title: "重点对象", text: metrics.riskiestServiceCenter ? `${metrics.riskiestServiceCenter.city}/${metrics.riskiestServiceCenter.serviceCenter}` : "当前范围未出现明显风险服务中心。" },
+    { title: "处理动作", text: topFinding ? topFinding.recommendedAction : "进入原文池查看样本，再决定是否生成工单。" },
   ];
 }
 
@@ -4642,7 +5150,10 @@ function filterDrilldownRows(filter: DrilldownFilter): string[][] {
     const cityMatched = filter.selectedCities.length === 0 || filter.selectedCities.includes(row[1]);
     const centerMatched = filter.selectedCenters.length === 0 || filter.selectedCenters.includes(row[2]);
     const rowTopics = getRowTopics(row);
-    const topicMatched = filter.selectedTopics.length === 0 || filter.selectedTopics.some((topic) => rowTopics.includes(topic));
+    const topicMatched = filter.selectedTopics.length === 0
+      || (hasImportedRawRecords()
+        ? rawRecordsMatchRow(row, filter)
+        : filter.selectedTopics.some((topic) => rowTopics.includes(topic)));
     return regionMatched && cityMatched && centerMatched && topicMatched;
   });
 }
@@ -4713,6 +5224,8 @@ function getActiveProjectsForFilter(filter: DrilldownFilter): ImportedProject[] 
 }
 
 function getCurrentScopeRawFeedbackTotal(filter: DrilldownFilter, filteredRows: string[][]): number {
+  const rawRecords = filterRawRecords(filter);
+  if (hasImportedRawRecords()) return rawRecords.length;
   const activeProjects = getActiveProjectsForFilter(filter);
   if (activeProjects.length === 0) return 0;
   const projectTotal = activeProjects.reduce((sum, project) => sum + projectCountValue(project), 0);
@@ -4734,6 +5247,54 @@ function getCurrentScopeRawFeedbackTotal(filter: DrilldownFilter, filteredRows: 
   return rowTotal;
 }
 
+function filterRawRecords(filter: DrilldownFilter): NormalizedFeedback[] {
+  if (currentRawRecords.length === 0) return [];
+  const projectNames = filter.selectedProjectIds
+    .map((projectId) => importedProjects.find((project) => project.id === projectId)?.name)
+    .filter((name): name is string => Boolean(name));
+  const bounds = getTimeBoundsForFilter(filter);
+
+  return currentRawRecords.filter((record) => {
+    const recordDate = record.submittedAt.slice(0, 10);
+    const timeMatched = !bounds || (recordDate >= bounds.start && recordDate <= bounds.end);
+    const projectMatched = projectNames.length === 0 || projectNames.includes(record.projectName);
+    const regionMatched = filter.selectedRegions.length === 0 || (record.region && filter.selectedRegions.includes(record.region));
+    const cityMatched = filter.selectedCities.length === 0 || (record.city && filter.selectedCities.includes(record.city));
+    const centerMatched = filter.selectedCenters.length === 0 || (record.serviceCenter && filter.selectedCenters.includes(record.serviceCenter));
+    const recordTopics = inferRecordTopics([record]);
+    const topicMatched = filter.selectedTopics.length === 0 || filter.selectedTopics.some((topic) => recordTopics.includes(topic));
+    return timeMatched && projectMatched && regionMatched && cityMatched && centerMatched && topicMatched;
+  });
+}
+
+function hasImportedRawRecords(): boolean {
+  return currentRawRecords.length > 0;
+}
+
+function countRawRecordsForRow(row: string[], filter?: DrilldownFilter): number {
+  if (!hasImportedRawRecords()) return Number(row[3].replace(/,/g, "")) || 0;
+  const [, city, serviceCenter] = row;
+  const baseFilter = filter ?? defaultDrilldownFilter;
+  return filterRawRecords({
+    ...baseFilter,
+    selectedCities: [],
+    selectedCenters: [serviceCenter],
+  }).filter((record) => record.city === city || record.serviceCenter === serviceCenter).length;
+}
+
+function rawRecordsMatchRow(row: string[], filter: DrilldownFilter): boolean {
+  if (!hasImportedRawRecords()) return false;
+  const [, city, serviceCenter] = row;
+  return filterRawRecords(filter).some((record) => record.city === city || record.serviceCenter === serviceCenter);
+}
+
+function getScenarioMatchedRawRecords(filter: DrilldownFilter, scenario: string | null): NormalizedFeedback[] {
+  const records = filterRawRecords(scenario ? buildReportFilter(filter, scenario) : filter);
+  if (!scenario) return records;
+  const classifier = scenarioClassifiers[scenario];
+  return classifier ? records.filter(classifier) : records;
+}
+
 function buildRawFeedbackPage(
   filter: DrilldownFilter,
   filteredRows: string[][],
@@ -4741,6 +5302,10 @@ function buildRawFeedbackPage(
   endIndex: number,
 ): RawFeedbackRecord[] {
   if (startIndex === 0 || endIndex === 0 || startIndex > endIndex) return [];
+  const rawRecords = filterRawRecords(filter);
+  if (hasImportedRawRecords()) {
+    return rawRecords.slice(startIndex - 1, endIndex).map((record, index) => rawRecordToEvidence(record, startIndex + index));
+  }
 
   const rowPool = filteredRows.length ? filteredRows : drilldownRows;
   const projectPool = getActiveProjectsForFilter(filter);
@@ -4769,6 +5334,24 @@ function buildRawFeedbackPage(
   });
 }
 
+function rawRecordToEvidence(record: NormalizedFeedback, recordNumber: number): RawFeedbackRecord {
+  const topics = inferRecordTopics([record]);
+  return {
+    quote: record.feedbackText,
+    rating: typeof record.rating === "number" ? `${record.rating}/5` : "-",
+    nps: typeof record.npsScore === "number" ? `${record.npsScore}/10` : "-",
+    submittedAt: formatDisplayDateTime(record.submittedAt),
+    source: record.sourceLabel,
+    location: `${record.city ?? "未标注城市"} / ${record.serviceCenter ?? "未标注服务中心"}`,
+    scenario: record.serviceScenario,
+    reason: `当前筛选命中：${topics.join("、") || "常规反馈"}`,
+    tone: isLowScoreRecord(record) ? "risk" : (record.rating ?? 0) >= 4 || (record.npsScore ?? 0) >= 9 ? "pass" : "warning",
+    feedbackId: record.id,
+    projectName: record.projectName,
+    recordNumber,
+  };
+}
+
 function cellTone(value: string): StatusTone {
   if (["已识别", "已通过", "已脱敏", "已导入", "低"].includes(value)) return "pass";
   if (["需确认", "需配置", "待配置", "中"].includes(value)) return "warning";
@@ -4776,19 +5359,20 @@ function cellTone(value: string): StatusTone {
   return "neutral";
 }
 
-function buildServiceCenterWorkOrderDraft(row: string[], scopeLabel: string): WorkOrderDraft {
+function buildServiceCenterWorkOrderDraft(row: string[], scopeLabel: string, filter?: DrilldownFilter): WorkOrderDraft {
   const [region, city, serviceCenter, count, rating, risk, reason] = row;
+  const evidenceQuotesForWorkOrder = buildDomainEvidenceQuotes(row, filter);
   const insight: FocusRegionInsight = {
     title: `${serviceCenter}${risk === "高" ? "高风险处理" : "体验问题复核"}`,
     tone: risk === "低" ? "good" : "risk",
     location: city,
     serviceCenter,
     totalFeedback: Number(count.replace(/,/g, "")) || 0,
-    representativeCount: buildDomainEvidenceQuotes(row).length,
+    representativeCount: evidenceQuotesForWorkOrder.length,
     commonPattern: `${region}${city}${serviceCenter}：${reason}，当前评分 ${rating}，风险等级 ${risk}`,
     recommendedAction:
       "请服务中心核实对应低分样本，明确等待、解释、同步或交付问题的原因、责任人、处理时限和回访口径，并在下次复盘前回传处理结果。",
-    evidenceQuotes: buildDomainEvidenceQuotes(row),
+    evidenceQuotes: evidenceQuotesForWorkOrder,
   };
 
   return createWorkOrderDraftFromInsight({
@@ -4798,8 +5382,34 @@ function buildServiceCenterWorkOrderDraft(row: string[], scopeLabel: string): Wo
   });
 }
 
-function buildDomainEvidenceQuotes(row: string[]): DomainEvidenceQuote[] {
+function buildDomainEvidenceQuotes(row: string[], filter?: DrilldownFilter): DomainEvidenceQuote[] {
   const [, city, serviceCenter, , , risk, reason] = row;
+  if (hasImportedRawRecords()) {
+    const records = filterRawRecords({
+      ...(filter ?? defaultDrilldownFilter),
+      selectedCenters: [serviceCenter],
+    }).filter((record) => record.serviceCenter === serviceCenter || record.city === city);
+    const sortedRecords = [...records].sort((a, b) => riskWeight(b) - riskWeight(a));
+    return sortedRecords.map((record, index) => {
+      const evidence = rawRecordToEvidence(record, index + 1);
+      return {
+        feedbackId: evidence.feedbackId,
+        quote: evidence.quote,
+        sentiment: evidence.tone === "pass" ? "正向" : evidence.tone === "risk" ? "负向" : "中性",
+        serviceStage: inferServiceStage(evidence.reason),
+        reasonToUse: `${risk}风险服务中心工单证据：${evidence.reason}`,
+        scoreSource: {
+          rating: parseScore(evidence.rating),
+          npsScore: parseScore(evidence.nps),
+          submittedAt: evidence.submittedAt,
+          sourceLabel: evidence.source,
+          location: evidence.location,
+          serviceScenario: inferServiceScenario(evidence.scenario),
+        },
+      };
+    });
+  }
+
   const matchedEvidence = evidenceQuotes.filter((item) => item.location.includes(city) || item.location.includes(serviceCenter));
   const fallbackEvidence = evidenceQuotes.filter((item) => item.tone !== "pass");
   const items = [...matchedEvidence, ...fallbackEvidence].filter((item, index, source) =>
@@ -4824,21 +5434,13 @@ function buildDomainEvidenceQuotes(row: string[]): DomainEvidenceQuote[] {
 }
 
 function buildQaAgentRecords(filter: DrilldownFilter, contextProject?: ImportedProject | null): NormalizedFeedback[] {
-  const rows = filterDrilldownRows(filter);
-  const projects = contextProject
-    ? [contextProject]
-    : filter.selectedProjectIds.length
-      ? filter.selectedProjectIds
-        .map((projectId) => importedProjects.find((project) => project.id === projectId))
-        .filter((project): project is ImportedProject => Boolean(project))
-      : importedProjects;
-  const activeRows = rows.length ? rows : drilldownRows;
-  return activeRows.flatMap((row) =>
-    evidenceQuotes.map((evidence, index) => {
-      const project = projects[index % projects.length] ?? importedProjects[0];
-      return mapEvidenceToNormalizedFeedback(evidence, row, project, `${row[2]}-${index + 1}`);
-    }),
-  );
+  if (currentRawRecords.length > 0) {
+    const contextFilter = contextProject
+      ? { ...filter, selectedProjectIds: [contextProject.id] }
+      : filter;
+    return filterRawRecords(contextFilter);
+  }
+  return [];
 }
 
 function mapEvidenceToNormalizedFeedback(
@@ -4889,6 +5491,58 @@ function buildQaScopeSnapshot(mode: QaScopeMode, filter: DrilldownFilter, contex
   };
 }
 
+function loadPersistedQaState(): {
+  conversationThreads: QaThread[];
+  favoriteThreadIds: string[];
+  selectedThreadId: string | null;
+} {
+  if (typeof window === "undefined") {
+    return { conversationThreads: [], favoriteThreadIds: [], selectedThreadId: null };
+  }
+  try {
+    const raw = window.localStorage.getItem(qaStorageKey);
+    if (!raw) return { conversationThreads: [], favoriteThreadIds: [], selectedThreadId: null };
+    const parsed = JSON.parse(raw) as Partial<{
+      conversationThreads: QaThread[];
+      favoriteThreadIds: string[];
+      selectedThreadId: string | null;
+    }>;
+    const conversationThreads = Array.isArray(parsed.conversationThreads)
+      ? parsed.conversationThreads.filter(isUserCreatedQaThread)
+      : [];
+    const favoriteThreadIds = Array.isArray(parsed.favoriteThreadIds)
+      ? parsed.favoriteThreadIds.filter((id): id is string => typeof id === "string" && conversationThreads.some((thread) => thread.id === id))
+      : [];
+    const selectedThreadId = typeof parsed.selectedThreadId === "string" && conversationThreads.some((thread) => thread.id === parsed.selectedThreadId)
+      ? parsed.selectedThreadId
+      : null;
+    return { conversationThreads, favoriteThreadIds, selectedThreadId };
+  } catch {
+    return { conversationThreads: [], favoriteThreadIds: [], selectedThreadId: null };
+  }
+}
+
+function isUserCreatedQaThread(thread: unknown): thread is QaThread {
+  if (!thread || typeof thread !== "object") return false;
+  const candidate = thread as Partial<QaThread>;
+  if (typeof candidate.id !== "string" || typeof candidate.title !== "string") return false;
+  if (["hangzhou-risk", "field-service-good", "app-sync"].includes(candidate.id)) return false;
+  return Array.isArray(candidate.turns) && candidate.turns.some((message) => message.role === "user");
+}
+
+function persistQaState(state: {
+  conversationThreads: QaThread[];
+  favoriteThreadIds: string[];
+  selectedThreadId: string | null;
+}) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(qaStorageKey, JSON.stringify(state));
+  } catch {
+    // localStorage can fail in private mode; keeping in-memory state still preserves the current session.
+  }
+}
+
 function getQaProjectById(projectId: string | null): ImportedProject | null {
   if (!projectId) return null;
   return qaProjects.find((project) => project.id === projectId) ?? null;
@@ -4918,6 +5572,27 @@ function buildQaRetrievalScope(filter: DrilldownFilter, contextProject?: Importe
   };
 }
 
+function loadPersistedArchivedProjectIds(): string[] {
+  if (typeof window === "undefined") return ["april-monthly"];
+  try {
+    const raw = window.localStorage.getItem(projectArchiveStorageKey);
+    if (!raw) return ["april-monthly"];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : ["april-monthly"];
+  } catch {
+    return ["april-monthly"];
+  }
+}
+
+function persistArchivedProjectIds(ids: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(projectArchiveStorageKey, JSON.stringify(ids));
+  } catch {
+    // Local persistence is best-effort for the front-end MVP.
+  }
+}
+
 function buildLegacyThreadMessages(threadId: string): QaMessage[] {
   const question = buildLegacyThreadQuestion(threadId);
   const answer = buildLegacyThreadAnswer(threadId);
@@ -4936,7 +5611,7 @@ function buildLegacyThreadEvidenceQuotes(threadId: string): DomainEvidenceQuote[
 function buildLegacyThreadQuestion(threadId: string): string {
   if (threadId === "field-service-good") return "移动服务正向案例可以提炼成哪些标准动作？";
   if (threadId === "app-sync") return "App 预约同步异常主要影响哪些服务中心？";
-  return "杭州西溪服务中心低分主要集中在哪些环节？";
+  return "当前范围内的低分主要集中在哪些环节？";
 }
 
 function buildLegacyThreadAnswer(threadId: string): string {
@@ -5000,6 +5675,12 @@ function getServiceCenterEmail(serviceCenter: string): string {
     天河服务中心: "tianhe.service-center@example.com",
     高新服务中心: "gaoxin.service-center@example.com",
     望京服务中心: "wangjing.service-center@example.com",
+    北京亦庄服务中心: "beijing-yizhuang.service-center@example.com",
+    南京建邺服务中心: "nanjing-jianye.service-center@example.com",
+    苏州吴中服务中心: "suzhou-wuzhong.service-center@example.com",
+    深圳福田服务中心: "shenzhen-futian.service-center@example.com",
+    武汉汉口服务中心: "wuhan-hankou.service-center@example.com",
+    郑州高新服务中心: "zhengzhou-gaoxin.service-center@example.com",
   };
   return directory[serviceCenter] ?? "service-center-owner@example.com";
 }

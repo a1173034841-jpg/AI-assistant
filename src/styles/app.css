@@ -314,7 +314,7 @@ p {
 
 .primary-preview-panel {
   position: absolute;
-  inset: 0 auto 0 0;
+  inset: 0 auto 0 56px;
   width: 232px;
   z-index: 6;
   box-shadow: 16px 0 28px rgba(15, 23, 42, 0.22);
@@ -3553,6 +3553,21 @@ p {
   white-space: nowrap;
 }
 
+.qa-reference-bar > em {
+  grid-column: 2 / -1;
+  display: grid;
+  place-items: center start;
+  min-height: 48px;
+  padding: 0 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: #fff;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 700;
+}
+
 .qa-reference-bar strong {
   color: var(--ink);
   font-size: 13px;
@@ -3816,6 +3831,13 @@ p {
 .suggested-question-strip button:hover {
   border-color: rgba(0, 139, 139, 0.38);
   background: #d8f5f1;
+}
+
+.suggested-question-strip > span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
 }
 
 .composer {

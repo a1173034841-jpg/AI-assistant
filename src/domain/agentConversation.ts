@@ -114,7 +114,8 @@ export function buildAgentConversationTitle(selection: ProjectSelection): string
 
 export function buildAutoConversationTitle(question: string): string {
   const compact = question.replace(/[？?。！!，,、\s]/g, "");
-  if (compact.includes("杭州西溪") && compact.includes("低分")) return "杭州西溪低分闭环";
+  const centerMatch = compact.match(/([\u4e00-\u9fa5A-Za-z0-9]{2,12}服务中心)/);
+  if (centerMatch?.[1] && compact.includes("低分")) return `${centerMatch[1]}低分闭环`;
   if (compact.includes("等待")) return "等待时间影响服务中心";
   if (compact.includes("App") || compact.includes("预约")) return "预约同步异常分析";
   if (compact.includes("满意度") || compact.includes("评分")) return "满意度变化原因";
@@ -133,14 +134,14 @@ export function buildAfterSalesQaAnswer(input: {
   const isAppQuestion = input.question.includes("App") || input.question.includes("预约") || input.question.includes("同步");
 
   if (isWaitQuestion) {
-    return `结论：等待时间主要影响杭州西溪服务中心，其次是北京望京服务中心。${project}，范围：${input.scopeLabel}。证据集中在“到店仍等待较久”“无人主动告知排队时长”“异常解释不清”三类表达。下一步：先让杭州西溪补齐预约确认、排队告知、等待超时解释和回访闭环，再用同一口径复核北京望京。`;
+    return `结论：等待时间需要回到当前范围内的服务中心和原文证据判断。${project}，范围：${input.scopeLabel}。请优先查看“到店仍等待较久”“无人主动告知排队时长”“异常解释不清”三类表达。下一步：按命中服务中心生成闭环动作。`;
   }
 
   if (isAppQuestion) {
-    return `结论：预约同步异常主要集中在成都高新服务中心。${project}，范围：${input.scopeLabel}。用户反馈不是单纯抱怨 App，而是“页面已确认、门店未同步”导致二次排队和现场解释压力。下一步：把门店确认节点加入导入批次复核，并建立人工兜底提醒。`;
+    return `结论：预约同步异常需要按当前范围内的项目、城市和服务中心确认。${project}，范围：${input.scopeLabel}。用户反馈如果出现“页面已确认、门店未同步”，应进入人工复核清单。下一步：检查门店确认节点。`;
   }
 
-  return `结论：当前范围内最需要关注的是等待时间、解释不清和预约同步三个问题。${project}，范围：${input.scopeLabel}。其中杭州西溪偏等待与解释，成都高新偏预约同步，北京望京偏交付解释。下一步：按服务中心生成闭环工单，并回到原文池查看完整命中样本。`;
+  return `结论：当前范围内最需要关注的问题应由已导入反馈、筛选范围和引用证据共同决定。${project}，范围：${input.scopeLabel}。下一步：按命中的服务中心生成闭环工单，并回到原文池查看完整命中样本。`;
 }
 
 export function removeQaConversationRecord(
